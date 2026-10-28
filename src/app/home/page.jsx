@@ -262,10 +262,10 @@ export default function HomePage() {
 
                         <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl lg:text-6xl">
                             <span className="text-stone-900">
-                                Neural Network, lebih mudah dipelajari.
+                                Neural Networt Playground
                             </span>{" "}
                             <span className="text-stone-600">
-                                Konfigurasikan model, jalankan training, dan uji hasil prediksi secara interaktif tanpa coding.
+                                Konfigurasikan model, latih model, dan uji hasil prediksi secara interaktif tanpa coding.
                             </span>
                         </h1>
 
