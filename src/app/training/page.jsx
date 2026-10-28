@@ -4,6 +4,9 @@ import React, { useRef, useState } from "react";
 import { parseDataset } from "@/utils/csv"
 import Link from "next/link";
 import { downloadBundle } from "@/utils/modelBundle";
+import { sampleToFile } from "@/utils/sampleDatasets";
+import SamplePicker from "./SamplePicker";
+import TrainingInsight from "./TrainingInsight";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const PREVIEW_ROWS = 5;
@@ -185,6 +188,7 @@ export default function TrainingPage() {
     const [inputKey, setInputKey] = useState(0);
     const readId = useRef(0);
     const [bundle, setBundle] = useState(null);
+    const [run, setRun] = useState(null); // hasil training terakhir: untuk grafik & laporan
 
     const [error, setError] = useState("");
     const [status, setStatus] = useState("");
@@ -204,13 +208,18 @@ export default function TrainingPage() {
     }
 
     async function handleFile(event) {
-        const file = event.target.files?.[0];
+        await processFile(event.target.files?.[0]);
+    }
+
+    async function processFile(file) {
         const currentRead = ++readId.current;
 
         setError("");
         setStatus("");
         setDataset(null);
         setFileError("");
+        setBundle(null);
+        setRun(null);
 
         if (!file) {
             setReading(false);
@@ -246,12 +255,20 @@ export default function TrainingPage() {
         }
     }
 
+    function handleSample(sample) {
+        setConfig((prev) => ({ ...prev, ...sample.config }));
+        setInputKey((key) => key + 1); // kosongkan input file agar tidak membingungkan
+        processFile(sampleToFile(sample));
+    }
+
     function handleClearFile() {
         readId.current++;
         setDataset(null);
         setFileError("");
         setReading(false);
         setInputKey((key) => key + 1);
+        setBundle(null);
+        setRun(null);
         setError("");
         setStatus("");
     }
@@ -307,6 +324,7 @@ export default function TrainingPage() {
         formData.append("dataset", dataset.file);
 
         setBundle(null);
+        setRun(null);
         setSubmitting(true);
 
         try {
@@ -318,6 +336,16 @@ export default function TrainingPage() {
             }
 
             setBundle(data.bundle);
+            setRun({
+                config: { ...config },
+                dataset: {
+                    fileName: dataset.fileName,
+                    rows: dataset.rows.length,
+                    headers: dataset.headers,
+                },
+                history: data.history,
+                meta: data.bundle?.meta,
+            });
 
             const last = data.history[data.history.length - 1];
             const valPart = Number.isFinite(last.val_loss)
@@ -389,6 +417,10 @@ export default function TrainingPage() {
                                 )}
                             </div>
                         </Field>
+
+                        <div className="py-5">
+                            <SamplePicker onPick={handleSample} />
+                        </div>
 
                         {dataset && <DatasetSummary dataset={dataset} />}
                     </Section>
@@ -553,6 +585,8 @@ export default function TrainingPage() {
                             />
                         </Field>
                     </Section>
+
+                    {run && <TrainingInsight run={run} />}
 
                     <div className="space-y-4 border-t border-stone-200 pt-6">
                         {error && (
