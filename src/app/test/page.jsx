@@ -2,7 +2,8 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { loadBundle, predict } from "@/utils/modelBundle";
+import { loadBundle, predict, traceForward } from "@/utils/modelBundle";
+import NetworkVisualizer from "./NetworkVisualizer";
 
 const inputClass =
     "block h-11 w-full rounded-md border border-stone-500 bg-white px-3 font-mono text-sm " +
@@ -27,6 +28,9 @@ export default function TestModelPage() {
     const [loaded, setLoaded] = useState(null);
     const [inputs, setInputs] = useState([]);
     const [result, setResult] = useState(null);
+    const [traceData, setTraceData] = useState(null);
+    const [runId, setRunId] = useState(0);
+    const [animDone, setAnimDone] = useState(false);
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
     const [predicting, setPredicting] = useState(false);
@@ -36,11 +40,17 @@ export default function TestModelPage() {
         return () => modelRef.current?.dispose();
     }, []);
 
+    function resetOutput() {
+        setResult(null);
+        setTraceData(null);
+        setAnimDone(false);
+    }
+
     async function handleFile(event) {
         const file = event.target.files?.[0];
 
         setError("");
-        setResult(null);
+        resetOutput();
 
         if (!file) return;
 
@@ -65,7 +75,7 @@ export default function TestModelPage() {
 
     function handleInput(index, value) {
         setInputs((prev) => prev.map((v, i) => (i === index ? value : v)));
-        setResult(null);
+        resetOutput();
         setError("");
     }
 
@@ -77,9 +87,15 @@ export default function TestModelPage() {
         setError("");
 
         try {
-            setResult(await predict(loaded.model, loaded.meta, inputs));
+            const prediction = await predict(loaded.model, loaded.meta, inputs);
+            const trace = traceForward(loaded.model, loaded.meta, inputs);
+
+            setResult(prediction);
+            setTraceData(trace);
+            setAnimDone(false);
+            setRunId((id) => id + 1);
         } catch (err) {
-            setResult(null);
+            resetOutput();
             setError(err.message || "Prediksi gagal.");
         } finally {
             setPredicting(false);
@@ -217,7 +233,16 @@ export default function TestModelPage() {
                             </button>
                         </form>
 
-                        {result && (
+                        {traceData && (
+                            <NetworkVisualizer
+                                key={runId}
+                                data={traceData}
+                                result={result}
+                                onDone={() => setAnimDone(true)}
+                            />
+                        )}
+
+                        {result && animDone && (
                             <section
                                 aria-labelledby="group-result"
                                 role="status"
