@@ -5,8 +5,10 @@ import { parseDataset } from "@/utils/csv"
 import Link from "next/link";
 import { downloadBundle } from "@/utils/modelBundle";
 import { sampleToFile } from "@/utils/sampleDatasets";
+import { generatePythonCode, generateNodeCode } from "@/utils/convert";
 import SamplePicker from "./SamplePicker";
 import TrainingInsight from "./TrainingInsight";
+import SourceCodePanel from "./SourceCodePanel";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const PREVIEW_ROWS = 5;
@@ -342,6 +344,7 @@ export default function TrainingPage() {
                     fileName: dataset.fileName,
                     rows: dataset.rows.length,
                     headers: dataset.headers,
+                    delimiter: dataset.delimiter,
                 },
                 history: data.history,
                 meta: data.bundle?.meta,
@@ -359,6 +362,20 @@ export default function TrainingPage() {
             setError(err.message || "Tidak dapat menghubungi server.");
         } finally {
             setSubmitting(false);
+        }
+    }
+
+    function handleDownloadSource(type) {
+        if (!run) return;
+
+        try {
+            if (type === "python") {
+                downloadCode("train.py", generatePythonCode(run));
+            } else {
+                downloadCode("train.js", generateNodeCode(run));
+            }
+        } catch (err) {
+            setError(err.message || "Source code tidak dapat dibuat.");
         }
     }
 
@@ -587,6 +604,7 @@ export default function TrainingPage() {
                     </Section>
 
                     {run && <TrainingInsight run={run} />}
+                    {run && <SourceCodePanel run={run} />}
 
                     <div className="space-y-4 border-t border-stone-200 pt-6">
                         {error && (
@@ -617,6 +635,7 @@ export default function TrainingPage() {
                                 >
                                     Download Model
                                 </button>
+
                                 <Link
                                     href="/test"
                                     className="inline-flex h-11 items-center justify-center rounded-md px-3 text-sm font-medium text-stone-900 underline underline-offset-4 hover:text-orange-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-700 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-50"
