@@ -10,7 +10,7 @@ const NAV_LINKS = [
     { href: "/test", label: "Tes Model" },
 ];
 
-const BASE_COLOR = "250, 250, 249"; 
+const BASE_COLOR = "250, 250, 249";
 const STRANDS = 90;
 const SEGMENTS = 48;
 const STRAND_ALPHA = 0.42;
@@ -259,15 +259,16 @@ export default function HomePage() {
             <main className="relative z-10 flex flex-1 items-start px-5 pb-56 pt-14 sm:px-8 sm:pt-20 lg:items-center lg:pb-24 lg:pt-12">
                 <div className="mx-auto w-full max-w-6xl">
                     <div className="max-w-xl">
+
                         <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl lg:text-6xl">
                             <span className="text-stone-900">
-                                Latih dan tes model Neural Network dari file CSV.
+                                Neural Network, lebih mudah dipelajari.
                             </span>{" "}
                             <span className="text-stone-600">
-                                Atur parameter, mulai training, unduh model, lalu
-                                coba prediksi dengan data baru.
+                                Konfigurasikan model, jalankan training, dan uji hasil prediksi secara interaktif tanpa coding.
                             </span>
                         </h1>
+
 
                         <div className="mt-10 flex flex-col gap-3 sm:flex-row">
                             <Link
