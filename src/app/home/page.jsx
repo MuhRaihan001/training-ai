@@ -195,7 +195,6 @@ function RibbonBackground() {
             frameId = 0;
         }
 
-        // Jalan hanya kalau tab terlihat dan canvas ada di layar.
         function sync() {
             if (inView && tabVisible) start();
             else stop();
@@ -316,7 +315,7 @@ export default function HomePage() {
                         <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl lg:text-6xl">
                             <span className="text-stone-900">
                                 Neural Network Playground
-                            </span>{" "}
+                            </span> <br></br>
                             <span className="text-stone-600">
                                 Atur model, latih model, dan uji hasil prediksi secara interaktif tanpa coding.
                             </span>
