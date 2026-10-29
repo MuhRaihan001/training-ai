@@ -11,10 +11,15 @@ const NAV_LINKS = [
 ];
 
 const BASE_COLOR = "250, 250, 249";
-const STRANDS = 90;
-const SEGMENTS = 48;
-const STRAND_ALPHA = 0.42;
+const STRANDS_DESKTOP = 40;
+const STRANDS_MOBILE = 24;
+const SEGMENTS = 28;
+const STRAND_ALPHA = 0.5;
+const STRAND_WIDTH = 1.6;
+const FRAME_INTERVAL = 1000 / 30; // batasi ke 30 fps
+const MAX_DPR = 1.5;
 const DESKTOP_MIN_WIDTH = 1024;
+
 const PATH_DESKTOP = [
     [0.56, -0.1],
     [0.44, 0.38],
@@ -82,15 +87,26 @@ function RibbonBackground() {
             "(prefers-reduced-motion: reduce)"
         ).matches;
 
-        const strandColors = RIBBONS.map((ribbon) =>
-            Array.from({ length: STRANDS }, (_, j) =>
-                colorAt(ribbon.stops, j / (STRANDS - 1)).join(", ")
-            )
-        );
-
         let width = 0;
         let height = 0;
         let frameId = 0;
+        let lastDraw = 0;
+        let inView = true;
+        let tabVisible = !document.hidden;
+
+        let strandCount = 0;
+        let strandStyles = [];
+
+        // Warna dihitung sekali per jumlah garis, bukan tiap frame.
+        function buildStyles(count) {
+            strandCount = count;
+            strandStyles = RIBBONS.map((ribbon) =>
+                Array.from({ length: count }, (_, j) => {
+                    const rgb = colorAt(ribbon.stops, j / (count - 1)).join(", ");
+                    return `rgba(${rgb}, ${STRAND_ALPHA})`;
+                })
+            );
+        }
 
         function buildSpine(ribbon, path, baseWidth, time) {
             const xs = path.map((p) => p[0] + ribbon.shift[0]);
@@ -129,23 +145,26 @@ function RibbonBackground() {
         }
 
         function render(time) {
+            if (!width || !height || !strandCount) return;
+
             const isDesktop = width >= DESKTOP_MIN_WIDTH;
             const path = isDesktop ? PATH_DESKTOP : PATH_MOBILE;
             const baseWidth = Math.min(width, height) * (isDesktop ? 0.62 : 0.55);
 
             ctx.clearRect(0, 0, width, height);
-            ctx.lineWidth = 1.3;
+            ctx.lineWidth = STRAND_WIDTH;
 
-            RIBBONS.forEach((ribbon, r) => {
-                const spine = buildSpine(ribbon, path, baseWidth, time);
+            for (let r = 0; r < RIBBONS.length; r++) {
+                const spine = buildSpine(RIBBONS[r], path, baseWidth, time);
 
-                for (let j = 0; j < STRANDS; j++) {
-                    const s = j / (STRANDS - 1) - 0.5;
+                for (let j = 0; j < strandCount; j++) {
+                    const s = j / (strandCount - 1) - 0.5;
 
-                    ctx.strokeStyle = `rgba(${strandColors[r][j]}, ${STRAND_ALPHA})`;
+                    ctx.strokeStyle = strandStyles[r][j];
                     ctx.beginPath();
 
-                    spine.forEach((point, i) => {
+                    for (let i = 0; i < spine.length; i++) {
+                        const point = spine[i];
                         const ripple = Math.sin(point.t * 9 + s * 4 + time * 0.0006) * 2;
                         const offset = s * point.spread + ripple;
                         const x = point.x + point.nx * offset;
@@ -153,20 +172,37 @@ function RibbonBackground() {
 
                         if (i === 0) ctx.moveTo(x, y);
                         else ctx.lineTo(x, y);
-                    });
+                    }
 
                     ctx.stroke();
                 }
-            });
+            }
         }
 
         function frame(time) {
-            render(time);
             frameId = requestAnimationFrame(frame);
+            if (time - lastDraw < FRAME_INTERVAL) return;
+            lastDraw = time;
+            render(time);
+        }
+
+        function start() {
+            if (!frameId && !reduceMotion) frameId = requestAnimationFrame(frame);
+        }
+
+        function stop() {
+            cancelAnimationFrame(frameId);
+            frameId = 0;
+        }
+
+        // Jalan hanya kalau tab terlihat dan canvas ada di layar.
+        function sync() {
+            if (inView && tabVisible) start();
+            else stop();
         }
 
         function resize() {
-            const dpr = window.devicePixelRatio || 1;
+            const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
 
             width = canvas.clientWidth;
             height = canvas.clientHeight;
@@ -174,19 +210,37 @@ function RibbonBackground() {
             canvas.height = Math.round(height * dpr);
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-            if (reduceMotion) render(0);
+            const count = width >= DESKTOP_MIN_WIDTH ? STRANDS_DESKTOP : STRANDS_MOBILE;
+            if (count !== strandCount) buildStyles(count);
+
+            render(0);
         }
 
-        const observer = new ResizeObserver(resize);
-        observer.observe(canvas);
+        function handleVisibility() {
+            tabVisible = !document.hidden;
+            sync();
+        }
 
-        if (!reduceMotion) frameId = requestAnimationFrame(frame);
+        const resizeObserver = new ResizeObserver(resize);
+        resizeObserver.observe(canvas);
+
+        const viewObserver = new IntersectionObserver(([entry]) => {
+            inView = entry.isIntersecting;
+            sync();
+        });
+        viewObserver.observe(canvas);
+
+        document.addEventListener("visibilitychange", handleVisibility);
+        sync();
 
         return () => {
-            cancelAnimationFrame(frameId);
-            observer.disconnect();
+            stop();
+            resizeObserver.disconnect();
+            viewObserver.disconnect();
+            document.removeEventListener("visibilitychange", handleVisibility);
         };
     }, []);
+
     return (
         <div
             aria-hidden="true"
@@ -212,7 +266,7 @@ function RibbonBackground() {
 
 function Navbar() {
     return (
-        <header className="relative z-20 border-b border-stone-200 bg-stone-50/80 backdrop-blur">
+        <header className="relative z-20 border-b border-stone-200 bg-stone-50/90">
             <nav
                 aria-label="Navigasi utama"
                 className="mx-auto flex h-14 w-full max-w-6xl items-center px-5 sm:px-8"
@@ -259,7 +313,6 @@ export default function HomePage() {
             <main className="relative z-10 flex flex-1 items-start px-5 pb-56 pt-14 sm:px-8 sm:pt-20 lg:items-center lg:pb-24 lg:pt-12">
                 <div className="mx-auto w-full max-w-6xl">
                     <div className="max-w-xl">
-
                         <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl lg:text-6xl">
                             <span className="text-stone-900">
                                 Neural Network Playground
@@ -268,7 +321,6 @@ export default function HomePage() {
                                 Atur model, latih model, dan uji hasil prediksi secara interaktif tanpa coding.
                             </span>
                         </h1>
-
 
                         <div className="mt-10 flex flex-col gap-3 sm:flex-row">
                             <Link
