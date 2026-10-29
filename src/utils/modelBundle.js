@@ -1,3 +1,5 @@
+import { encodeRow, normalizeMeta } from "@/utils/preprocess";
+
 function base64ToArrayBuffer(base64) {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
@@ -46,13 +48,6 @@ export async function createBundle(model, meta) {
     };
 }
 
-function toNumber(cell) {
-    const text = String(cell).trim();
-    if (text === "") return NaN;
-    if (/^-?\d+,\d+$/.test(text)) return Number(text.replace(",", "."));
-    return Number(text);
-}
-
 const ACTIVATIONS = {
     relu: (z) => z.map((v) => Math.max(0, v)),
     linear: (z) => z,
@@ -66,16 +61,15 @@ const ACTIVATIONS = {
     },
 };
 
+// rawInputs: satu nilai per kolom yang dipertahankan (meta.columns).
+// Teks diubah menjadi angka (one-hot / label) dengan aturan yang sama seperti saat training.
 function prepareInputs(meta, rawInputs) {
-    const { mean, std } = meta.featureStats;
+    const { columns, featureStats } = normalizeMeta(meta);
+    const { mean, std } = featureStats;
 
-    const numbers = rawInputs.map(toNumber);
-    const bad = numbers.findIndex((v) => !Number.isFinite(v));
-    if (bad !== -1) {
-        throw new Error(`Nilai untuk "${meta.featureNames[bad]}" harus berupa angka.`);
-    }
-
+    const numbers = encodeRow(columns, rawInputs);
     const scaled = numbers.map((v, i) => (v - mean[i]) / std[i]);
+
     return { numbers, scaled };
 }
 
@@ -117,7 +111,8 @@ export async function loadBundle(text) {
         tf.io.fromMemory({ ...rest, weightData: base64ToArrayBuffer(weightData) })
     );
 
-    return { model, meta: bundle.meta };
+    // normalizeMeta membuat bundle lama (tanpa info encoding) tetap bisa dimuat.
+    return { model, meta: normalizeMeta(bundle.meta) };
 }
 
 export async function predict(model, meta, rawInputs) {
@@ -154,6 +149,7 @@ export async function predict(model, meta, rawInputs) {
 export function traceForward(model, meta, rawInputs) {
     const { numbers, scaled } = prepareInputs(meta, rawInputs);
 
+    // labels = nama input model (kolom one-hot tampil sebagai "kolom=nilai").
     const layers = [
         { kind: "input", values: scaled, raw: numbers, labels: meta.featureNames },
     ];

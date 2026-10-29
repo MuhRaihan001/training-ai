@@ -1,8 +1,7 @@
-// src/utils/convert.js
-
 const HIDDEN_UNITS = [16, 8];
 const MOMENTUM = 0.9;
 const SEED = 42;
+const MISSING_LABEL = "(kosong)"; 
 
 const LOSSES = {
     meanSquaredError: { kind: "regression", keras: "mean_squared_error" },
@@ -36,6 +35,21 @@ const JS_OPTIMIZERS = {
     adadelta: (lr) => `tf.train.adadelta(${lr})`,
 };
 
+function resolveColumns(dataset, meta) {
+    if (Array.isArray(meta?.columns)) {
+        return {
+            columns: meta.columns.map(({ index, name, mode }) => ({ index, name, mode })),
+            dropped: meta.dropped ?? [],
+        };
+    }
+
+    const headers = dataset.headers ?? [];
+    return {
+        columns: headers.slice(0, -1).map((name, index) => ({ index, name, mode: "numeric" })),
+        dropped: [],
+    };
+}
+
 function resolve(config, dataset = {}, meta = {}) {
     if (config.loss === "cosineProximity") {
         throw new Error(
@@ -60,26 +74,27 @@ function resolve(config, dataset = {}, meta = {}) {
     else if (info.kind === "multiclass") activation = "softmax";
     else if (info.kind === "binary") activation = info.hinge ? "linear" : "sigmoid";
 
+    const { columns, dropped } = resolveColumns(dataset, meta);
+
     return {
         info,
         activation,
+        columns,
+        dropped,
         fileName: dataset.fileName ?? "dataset.csv",
         delimiter: dataset.delimiter ?? ",",
         validationSplit: meta?.validationSplit ?? (rowCount >= 10 ? 0.2 : 0),
     };
 }
 
-/* ------------------------------ Python ------------------------------ */
-
-const PY_NATURAL_KEY = String.raw`
-
-def natural_key(text):
-    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", text)]
-`;
+const literalList = (items) =>
+    "[\n" + items.map((item) => "    " + JSON.stringify(item)).join(",\n") + "\n]";
 
 function pythonTarget(info, loss) {
     if (info.kind === "regression") {
         return String.raw`y = to_number(df.iloc[:, -1]).to_numpy(dtype="float32").reshape(-1, 1)
+if np.isnan(y).any():
+    raise ValueError("The target column contains blank values")
 OUTPUT_UNITS = 1
 classes = None`;
     }
@@ -120,7 +135,6 @@ OUTPUT_UNITS = len(classes)`
 export function generatePythonCode({ config, dataset, meta }) {
     const r = resolve(config, dataset, meta);
     const { info } = r;
-    const classification = info.kind !== "regression";
 
     const dense = HIDDEN_UNITS
         .map((u) => `    layers.Dense(${u}, activation="relu"),`)
@@ -133,7 +147,9 @@ export function generatePythonCode({ config, dataset, meta }) {
 # Installation: pip install tensorflow pandas numpy
 
 import json
-${classification ? "import re\n" : ""}import numpy as np
+import re
+
+import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
@@ -147,26 +163,73 @@ BATCH_SIZE = ${config.batchSize}
 LEARNING_RATE = ${config.learningRate}
 VALIDATION_SPLIT = ${r.validationSplit}
 SEED = ${SEED}
+MISSING = ${JSON.stringify(MISSING_LABEL)}
 
-df = pd.read_csv(CSV_PATH, sep=DELIMITER, dtype=str, encoding="utf-8-sig").dropna(how="all")
-feature_names = list(df.columns[:-1])
+# Feature columns that are kept, with their treatment ("index" is the column position in the CSV).
+#   numeric : used as a number (blank cells are filled with the column mean)
+#   label   : text -> 0, 1, 2, ... (sorted alphabetically), then standardized
+#   onehot  : text -> one 0/1 input per distinct value
+COLUMNS = ${literalList(r.columns)}
+
+# Columns dropped on the training page (not used by the model)
+DROPPED = ${JSON.stringify(r.dropped)}
+
+df = pd.read_csv(CSV_PATH, sep=DELIMITER, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+df = df[df.apply(lambda row: any(v.strip() for v in row), axis=1)].reset_index(drop=True)
 target_name = df.columns[-1]
 
-if len(feature_names) != INPUT_SHAPE:
-    raise ValueError(f"INPUT_SHAPE ({INPUT_SHAPE}) must match the number of feature columns ({len(feature_names)})")
+
+def natural_key(text):
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", text)]
 
 
 def to_number(series):
     text = series.astype(str).str.strip()
     is_decimal_comma = text.str.fullmatch(r"-?\d+,\d+")
     text = text.mask(is_decimal_comma, text.str.replace(",", ".", regex=False))
-    return pd.to_numeric(text, errors="raise")
-${classification ? PY_NATURAL_KEY : ""}
+    return pd.to_numeric(text.mask(text == ""), errors="raise")
 
-# Features: standardization (mean 0, standard deviation 1)
-X = np.column_stack([to_number(df[c]).to_numpy(dtype="float64") for c in feature_names])
-mean = X.mean(axis=0)
-std = X.std(axis=0)
+
+def encode_column(spec):
+    series = df.iloc[:, spec["index"]]
+    name = spec["name"]
+
+    if spec["mode"] == "numeric":
+        values = to_number(series)
+        values = values.fillna(values.mean()).to_numpy(dtype="float64").reshape(-1, 1)
+        return values, None, [name]
+
+    text = series.astype(str).str.strip().replace("", MISSING)
+    categories = sorted(text.unique().tolist(), key=natural_key)
+    codes = text.map({c: i for i, c in enumerate(categories)}).to_numpy()
+
+    if spec["mode"] == "label":
+        return codes.astype("float64").reshape(-1, 1), categories, [name]
+
+    return np.eye(len(categories))[codes], categories, [f"{name}={c}" for c in categories]
+
+
+# Features: convert text to numbers, then standardize
+blocks, input_names, preprocessing, scale = [], [], [], []
+for spec in COLUMNS:
+    block, categories, names = encode_column(spec)
+    blocks.append(block)
+    input_names.extend(names)
+    scale.extend([spec["mode"] != "onehot"] * block.shape[1])
+    preprocessing.append({**spec, "categories": categories})
+
+if not blocks:
+    raise ValueError("At least one feature column must be kept")
+
+X = np.hstack(blocks).astype("float64")
+
+if X.shape[1] != INPUT_SHAPE:
+    raise ValueError(f"INPUT_SHAPE ({INPUT_SHAPE}) must match the number of model inputs after encoding ({X.shape[1]})")
+
+# Standardization (mean 0, standard deviation 1); one-hot columns stay 0/1
+scale = np.array(scale)
+mean = np.where(scale, X.mean(axis=0), 0.0)
+std = np.where(scale, X.std(axis=0), 1.0)
 std[std == 0] = 1.0
 X = ((X - mean) / std).astype("float32")
 
@@ -205,9 +268,12 @@ if not np.isfinite(history.history["loss"][-1]):
 
 model.save("model.keras")
 
+# Everything needed to preprocess new data the same way before calling model.predict()
 with open("preprocessing.json", "w", encoding="utf-8") as f:
     json.dump({
-        "feature_names": feature_names,
+        "feature_names": input_names,
+        "columns": preprocessing,
+        "dropped_columns": DROPPED,
         "target_name": target_name,
         "mean": mean.tolist(),
         "std": std.tolist(),
@@ -237,9 +303,7 @@ function nodeTarget(info, loss) {
     }
 
     const head = String.raw`function encodeTargets(rawTargets) {
-    const classes = [...new Set(rawTargets)].sort((a, b) =>
-        a.localeCompare(b, undefined, { numeric: true })
-    );
+    const classes = [...new Set(rawTargets)].sort(naturalCompare);
 
     const index = new Map(classes.map((label, i) => [label, i]));
     const labels = rawTargets.map((t) => index.get(t));
@@ -309,6 +373,16 @@ const BATCH_SIZE = ${config.batchSize};
 const LEARNING_RATE = ${config.learningRate};
 const VALIDATION_SPLIT = ${r.validationSplit};
 const OUTPUT_DIR = "./model-output";
+const MISSING = ${JSON.stringify(MISSING_LABEL)};
+
+// Feature columns that are kept, with their treatment ("index" is the column position in the CSV).
+//   numeric : used as a number (blank cells are filled with the column mean)
+//   label   : text -> 0, 1, 2, ... (sorted alphabetically), then standardized
+//   onehot  : text -> one 0/1 input per distinct value
+const COLUMNS = ${literalList(r.columns)};
+
+// Columns dropped on the training page (not used by the model)
+const DROPPED = ${JSON.stringify(r.dropped)};
 
 function parseCsv(text, delimiter) {
     const rows = [];
@@ -364,6 +438,15 @@ function toNumber(cell) {
     return Number(text);
 }
 
+function naturalCompare(a, b) {
+    return a.localeCompare(b, undefined, { numeric: true });
+}
+
+function cleanCategory(cell) {
+    const text = String(cell).trim();
+    return text === "" ? MISSING : text;
+}
+
 function shuffledIndices(length) {
     const order = Array.from({ length }, (_, i) => i);
 
@@ -375,25 +458,94 @@ function shuffledIndices(length) {
     return order;
 }
 
-function standardize(features, featureCount) {
-    const mean = new Array(featureCount).fill(0);
-    const std = new Array(featureCount).fill(0);
+// Converts text columns to numbers (label / one-hot) and drops the columns not listed in COLUMNS.
+function buildFeatures(rows) {
+    const columns = COLUMNS.map((spec) => ({
+        ...spec,
+        categories:
+            spec.mode === "numeric"
+                ? null
+                : [...new Set(rows.map((r) => cleanCategory(r[spec.index])))].sort(naturalCompare),
+    }));
 
-    for (const row of features) {
-        row.forEach((v, c) => (mean[c] += v / features.length));
+    const lookups = columns.map((col) => col.categories && new Map(col.categories.map((c, i) => [c, i])));
+
+    const fills = columns.map((col) => {
+        if (col.mode !== "numeric") return 0;
+
+        const values = rows.map((r) => toNumber(r[col.index])).filter(Number.isFinite);
+        return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+    });
+
+    const inputNames = [];
+    const scale = [];
+
+    for (const col of columns) {
+        if (col.mode === "onehot") {
+            for (const c of col.categories) {
+                inputNames.push(col.name + "=" + c);
+                scale.push(false);
+            }
+        } else {
+            inputNames.push(col.name);
+            scale.push(true);
+        }
     }
 
-    for (const row of features) {
-        row.forEach((v, c) => (std[c] += (v - mean[c]) ** 2 / features.length));
-    }
+    const matrix = rows.map((row, r) => {
+        const out = [];
 
-    for (let c = 0; c < featureCount; c++) {
-        std[c] = Math.sqrt(std[c]) || 1;
-    }
+        columns.forEach((col, k) => {
+            const cell = row[col.index];
 
-    const scaled = features.map((row) =>
-        row.map((v, c) => (v - mean[c]) / std[c])
-    );
+            if (col.mode === "numeric") {
+                const value = String(cell).trim() === "" ? fills[k] : toNumber(cell);
+
+                if (!Number.isFinite(value)) {
+                    throw new Error(
+                        'Data row ' + (r + 1) + ', column "' + col.name + '" is not numeric: "' + cell + '".'
+                    );
+                }
+
+                out.push(value);
+                return;
+            }
+
+            const code = lookups[k].get(cleanCategory(cell));
+
+            if (col.mode === "label") {
+                out.push(code);
+            } else {
+                col.categories.forEach((_, j) => out.push(j === code ? 1 : 0));
+            }
+        });
+
+        return out;
+    });
+
+    return { matrix, columns, inputNames, scale };
+}
+
+// Standardization (mean 0, standard deviation 1); one-hot columns stay 0/1
+function standardize(matrix, scale) {
+    const mean = new Array(scale.length).fill(0);
+    const std = new Array(scale.length).fill(1);
+
+    scale.forEach((on, c) => {
+        if (!on) return;
+
+        let sum = 0;
+        for (const row of matrix) sum += row[c];
+        const m = sum / matrix.length;
+
+        let variance = 0;
+        for (const row of matrix) variance += (row[c] - m) ** 2;
+
+        mean[c] = m;
+        std[c] = Math.sqrt(variance / matrix.length) || 1;
+    });
+
+    const scaled = matrix.map((row) => row.map((v, c) => (v - mean[c]) / std[c]));
 
     return { scaled, mean, std };
 }
@@ -404,34 +556,21 @@ async function main() {
     const text = fs.readFileSync(CSV_PATH, "utf8").replace(/^\uFEFF/, "");
     const [headers, ...rows] = parseCsv(text, DELIMITER);
 
-    const featureNames = headers.slice(0, -1).map((h) => h.trim());
-    const targetName = headers[headers.length - 1].trim();
+    const targetIndex = headers.length - 1;
+    const targetName = headers[targetIndex].trim();
 
-    if (featureNames.length !== INPUT_SHAPE) {
+    const { matrix, columns, inputNames, scale } = buildFeatures(rows);
+
+    if (inputNames.length !== INPUT_SHAPE) {
         throw new Error(
-            "INPUT_SHAPE (" + INPUT_SHAPE + ") must match the number of feature columns (" + featureNames.length + ")."
+            "INPUT_SHAPE (" + INPUT_SHAPE + ") must match the number of model inputs after encoding (" + inputNames.length + ")."
         );
     }
 
     const order = shuffledIndices(rows.length);
+    const { scaled, mean, std } = standardize(order.map((i) => matrix[i]), scale);
+    const rawTargets = order.map((i) => String(rows[i][targetIndex]).trim());
 
-    const features = order.map((i) =>
-        rows[i].slice(0, INPUT_SHAPE).map((cell, c) => {
-            const value = toNumber(cell);
-
-            if (!Number.isFinite(value)) {
-                throw new Error(
-                    'Data row ' + (i + 1) + ', column "' + featureNames[c] + '" is not numeric: "' + cell + '".'
-                );
-            }
-
-            return value;
-        })
-    );
-
-    const rawTargets = order.map((i) => String(rows[i][INPUT_SHAPE]).trim());
-
-    const { scaled, mean, std } = standardize(features, INPUT_SHAPE);
     const xs = tf.tensor2d(scaled, [rows.length, INPUT_SHAPE]);
     const { ys, outputUnits, classes } = encodeTargets(rawTargets);
 
@@ -479,10 +618,11 @@ ${hidden}
 
     await model.save("file://" + OUTPUT_DIR);
 
+    // Everything needed to preprocess new data the same way before calling model.predict()
     fs.writeFileSync(
         OUTPUT_DIR + "/preprocessing.json",
         JSON.stringify(
-            { featureNames, targetName, mean, std, classes },
+            { featureNames: inputNames, columns, dropped: DROPPED, targetName, mean, std, classes },
             null,
             2
         )

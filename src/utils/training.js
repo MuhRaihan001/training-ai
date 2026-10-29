@@ -1,4 +1,5 @@
 import * as tf from "@tensorflow/tfjs";
+import { analyzeColumns, buildFeatures, defaultPlan, toNumber } from "@/utils/preprocess";
 
 const REGRESSION_LOSSES = new Set([
     "meanSquaredError",
@@ -47,13 +48,6 @@ function createOptimizer(name, learningRate) {
     }
 }
 
-function toNumber(cell) {
-    const text = String(cell).trim();
-    if (text === "") return NaN;
-    if (/^-?\d+,\d+$/.test(text)) return Number(text.replace(",", "."));
-    return Number(text);
-}
-
 function shuffledIndices(length) {
     const order = Array.from({ length }, (_, i) => i);
     for (let i = length - 1; i > 0; i--) {
@@ -78,24 +72,6 @@ function validateConfig(config) {
     if (!Number.isFinite(learningRate) || learningRate <= 0) {
         throw new Error("Learning rate harus lebih besar dari 0.");
     }
-}
-
-function standardize(features, featureCount) {
-    const mean = new Array(featureCount).fill(0);
-    const std = new Array(featureCount).fill(0);
-
-    for (const row of features) {
-        row.forEach((v, c) => (mean[c] += v / features.length));
-    }
-    for (const row of features) {
-        row.forEach((v, c) => (std[c] += (v - mean[c]) ** 2 / features.length));
-    }
-    for (let c = 0; c < featureCount; c++) {
-        std[c] = Math.sqrt(std[c]) || 1;
-    }
-
-    const scaled = features.map((row) => row.map((v, c) => (v - mean[c]) / std[c]));
-    return { scaled, mean, std };
 }
 
 function encodeTargets(rawTargets, loss, targetName) {
@@ -175,47 +151,42 @@ function encodeTargets(rawTargets, loss, targetName) {
     throw new Error(`Loss tidak didukung: ${loss}.`);
 }
 
-function prepareData(config, dataset) {
+function prepareData(config, dataset, plan) {
     const { headers, rows } = dataset;
     const featureCount = headers.length - 1;
 
     if (featureCount < 1) {
         throw new Error("Dataset membutuhkan minimal 2 kolom: satu fitur dan satu target.");
     }
-    if (config.inputShape !== featureCount) {
-        throw new Error(
-            `Input shape (${config.inputShape}) harus sama dengan jumlah kolom fitur (${featureCount}), yaitu semua kolom kecuali kolom terakhir.`
-        );
-    }
     if (rows.length < 2) {
         throw new Error("Dataset membutuhkan minimal 2 baris data.");
     }
 
+    // Tanpa plan eksplisit, pakai perlakuan otomatis (angka, teks -> one-hot/label, ID -> drop).
+    const columnPlan = plan ?? defaultPlan(analyzeColumns(dataset));
+    const built = buildFeatures(dataset, columnPlan);
+
+    if (config.inputShape !== built.width) {
+        throw new Error(
+            `Input shape (${config.inputShape}) harus sama dengan jumlah input model setelah encoding dan drop kolom (${built.width}).`
+        );
+    }
+
     const targetName = headers[featureCount];
     const order = shuffledIndices(rows.length);
-
-    const features = order.map((i) =>
-        rows[i].slice(0, featureCount).map((cell, c) => {
-            const value = toNumber(cell);
-            if (!Number.isFinite(value)) {
-                throw new Error(
-                    `Baris data ke-${i + 1}, kolom "${headers[c]}" bukan angka: "${cell}".`
-                );
-            }
-            return value;
-        })
-    );
+    const features = order.map((i) => built.scaled[i]);
     const rawTargets = order.map((i) => String(rows[i][featureCount]).trim());
 
-    const { scaled, mean, std } = standardize(features, featureCount);
     const target = encodeTargets(rawTargets, config.loss, targetName);
 
     return {
-        xs: tf.tensor2d(scaled, [rows.length, featureCount]),
+        xs: tf.tensor2d(features, [rows.length, built.width]),
         target,
         targetName,
-        featureNames: headers.slice(0, featureCount),
-        featureStats: { mean, std },
+        columns: built.columns,
+        dropped: built.dropped,
+        featureNames: built.featureNames,
+        featureStats: built.featureStats,
     };
 }
 
@@ -249,14 +220,15 @@ function buildModel(config, target, hiddenUnits) {
 }
 
 export async function trainModel(config, dataset, options = {}) {
-    const { hiddenUnits = DEFAULT_HIDDEN_UNITS, onEpochEnd, save } = options;
+    const { hiddenUnits = DEFAULT_HIDDEN_UNITS, onEpochEnd, save, columns } = options;
 
     validateConfig(config);
     if (!dataset) {
         throw new Error("Training membutuhkan dataset CSV.");
     }
 
-    const { xs, target, targetName, featureNames, featureStats } = prepareData(config, dataset);
+    const { xs, target, targetName, featureNames, featureStats, columns: usedColumns, dropped } =
+        prepareData(config, dataset, columns);
     const { ys } = target;
     const validationSplit = dataset.rows.length >= 10 ? 0.2 : 0;
     const history = [];
@@ -294,7 +266,9 @@ export async function trainModel(config, dataset, options = {}) {
             validationSplit,
             targetName,
             featureNames,
-            featureStats,
+            featureStats, 
+            columns: usedColumns,
+            dropped, 
             classes: target.classes,
         };
 

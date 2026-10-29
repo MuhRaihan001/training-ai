@@ -24,6 +24,11 @@ const percentFormat = new Intl.NumberFormat("id-ID", {
     maximumFractionDigits: 1,
 });
 
+const MODE_HINTS = {
+    onehot: "Teks, dikonversi menjadi one-hot",
+    label: "Teks, dikonversi menjadi angka (label)",
+};
+
 export default function TestModelPage() {
     const [loaded, setLoaded] = useState(null);
     const [inputs, setInputs] = useState([]);
@@ -64,7 +69,7 @@ export default function TestModelPage() {
             modelRef.current = next.model;
 
             setLoaded(next);
-            setInputs(next.meta.featureNames.map(() => ""));
+            setInputs(next.meta.columns.map(() => ""));
         } catch (err) {
             setLoaded(null);
             setError(err.message || "Model tidak dapat dimuat.");
@@ -103,6 +108,7 @@ export default function TestModelPage() {
     }
 
     const meta = loaded?.meta;
+    const dropped = meta?.dropped ?? [];
 
     return (
         <main className="min-h-screen bg-stone-50 text-stone-900 antialiased">
@@ -186,8 +192,19 @@ export default function TestModelPage() {
                                     </div>
                                 ))}
                             </dl>
+                            <p className="text-sm text-stone-600">
+                                Input model:{" "}
+                                <span className="font-mono">{numberFormat.format(meta.featureNames.length)}</span>{" "}
+                                dari {meta.columns.length} kolom
+                                {dropped.length > 0 && (
+                                    <>
+                                        . Kolom yang dibuang saat training:{" "}
+                                        <span className="font-mono">{dropped.join(", ")}</span>
+                                    </>
+                                )}
+                            </p>
                             {meta.classes && (
-                                <p className="text-sm text-stone-600">
+                                <p className="mt-1 text-sm text-stone-600">
                                     Kelas: <span className="font-mono">{meta.classes.join(", ")}</span>
                                 </p>
                             )}
@@ -199,29 +216,60 @@ export default function TestModelPage() {
                             </h2>
 
                             <div className="divide-y divide-stone-200">
-                                {meta.featureNames.map((name, i) => (
-                                    <div
-                                        key={i}
-                                        className="py-4 md:grid md:grid-cols-[minmax(0,1fr)_20rem] md:items-center md:gap-x-10"
-                                    >
-                                        <label
-                                            htmlFor={`feature-${i}`}
-                                            className="mb-2 block text-sm font-medium md:mb-0"
+                                {meta.columns.map((col, i) => {
+                                    const categorical = col.mode !== "numeric";
+
+                                    return (
+                                        <div
+                                            key={i}
+                                            className="py-4 md:grid md:grid-cols-[minmax(0,1fr)_20rem] md:items-center md:gap-x-10"
                                         >
-                                            {name}
-                                        </label>
-                                        <input
-                                            id={`feature-${i}`}
-                                            type="text"
-                                            inputMode="decimal"
-                                            autoComplete="off"
-                                            value={inputs[i] ?? ""}
-                                            onChange={(e) => handleInput(i, e.target.value)}
-                                            required
-                                            className={inputClass}
-                                        />
-                                    </div>
-                                ))}
+                                            <div className="mb-2 md:mb-0">
+                                                <label
+                                                    htmlFor={`feature-${i}`}
+                                                    className="block text-sm font-medium"
+                                                >
+                                                    {col.name}
+                                                </label>
+                                                {categorical && (
+                                                    <p className="text-xs text-stone-500">
+                                                        {MODE_HINTS[col.mode]}
+                                                    </p>
+                                                )}
+                                            </div>
+
+                                            {categorical ? (
+                                                <select
+                                                    id={`feature-${i}`}
+                                                    value={inputs[i] ?? ""}
+                                                    onChange={(e) => handleInput(i, e.target.value)}
+                                                    required
+                                                    className={inputClass}
+                                                >
+                                                    <option value="" disabled>
+                                                        Pilih nilai
+                                                    </option>
+                                                    {col.categories.map((c) => (
+                                                        <option key={c} value={c}>
+                                                            {c}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            ) : (
+                                                <input
+                                                    id={`feature-${i}`}
+                                                    type="text"
+                                                    inputMode="decimal"
+                                                    autoComplete="off"
+                                                    value={inputs[i] ?? ""}
+                                                    onChange={(e) => handleInput(i, e.target.value)}
+                                                    required
+                                                    className={inputClass}
+                                                />
+                                            )}
+                                        </div>
+                                    );
+                                })}
                             </div>
 
                             <button

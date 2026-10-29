@@ -3,8 +3,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { parseDataset } from "@/utils/csv";
 import { sampleToFile } from "@/utils/sampleDatasets";
+import { MAX_INPUTS, analyzeColumns, countInputs, defaultPlan } from "@/utils/preprocess";
 import TrainingHeader from "./TrainingHeader";
 import DatasetSection from "./DatasetSection";
+import ColumnsSection from "./ColumnsSection";
 import ModelConfigurationForm from "./ModelConfigurationForm";
 import TrainingProgress from "./TrainingProgress";
 import TrainingResults from "./TrainingResults";
@@ -19,7 +21,7 @@ function formatBytes(bytes) {
     return `${sizeFormat.format(bytes / (1024 * 1024))} MB`;
 }
 
-function validate(cfg, dataset, fileError, reading) {
+function validate(cfg, dataset, fileError, reading, plan) {
     if (reading) return [{ message: "Reading the dataset file…" }];
     if (fileError) {
         return [{ message: "The dataset file has a problem. Choose another CSV file or remove it." }];
@@ -31,13 +33,26 @@ function validate(cfg, dataset, fileError, reading) {
 
     if (features < 1) {
         issues.push({ message: "The dataset needs at least two columns: one feature and one target." });
-    } else if (!Number.isInteger(cfg.inputShape) || cfg.inputShape < 1) {
-        issues.push({ message: "Input shape must be an integer of at least 1." });
-    } else if (cfg.inputShape !== features) {
-        issues.push({
-            message: `Input shape (${cfg.inputShape}) must equal the number of feature columns (${features}), which is every column except the last.`,
-            fix: { label: `Set to ${features}`, patch: { inputShape: features } },
-        });
+    } else if (plan.every((mode) => mode === "drop")) {
+        issues.push({ message: "Keep at least one feature column. All columns are currently dropped." });
+    } else {
+        const inputs = countInputs(dataset.columnInfo, plan);
+
+        if (inputs > MAX_INPUTS) {
+            issues.push({
+                message: `The columns produce ${inputs} model inputs, above the limit of ${MAX_INPUTS}. Drop columns or use Label instead of One-hot.`,
+            });
+        } else if (!Number.isInteger(cfg.inputShape) || cfg.inputShape < 1) {
+            issues.push({
+                message: "Input shape must be an integer of at least 1.",
+                fix: { label: `Set to ${inputs}`, patch: { inputShape: inputs } },
+            });
+        } else if (cfg.inputShape !== inputs) {
+            issues.push({
+                message: `Input shape (${cfg.inputShape}) must equal the number of model inputs (${inputs}) produced by the kept columns, after text columns are converted to numbers.`,
+                fix: { label: `Set to ${inputs}`, patch: { inputShape: inputs } },
+            });
+        }
     }
 
     if (!Number.isInteger(cfg.epochs) || cfg.epochs < 1) {
@@ -56,6 +71,7 @@ function validate(cfg, dataset, fileError, reading) {
 export default function TrainingPage() {
     const [config, setConfig] = useState(DEFAULT_CONFIG);
     const [dataset, setDataset] = useState(null);
+    const [plan, setPlan] = useState([]);
     const [fileError, setFileError] = useState("");
     const [reading, setReading] = useState(false);
     const [inputKey, setInputKey] = useState(0);
@@ -80,7 +96,7 @@ export default function TrainingPage() {
         headingRef.current?.focus();
     }, [view]);
 
-    const issues = validate(config, dataset, fileError, reading);
+    const issues = validate(config, dataset, fileError, reading, plan);
     const training = view === "training";
 
     function handleChange(event) {
@@ -91,10 +107,26 @@ export default function TrainingPage() {
         }));
     }
 
+    function applyPlan(nextPlan, infos = dataset?.columnInfo) {
+        setPlan(nextPlan);
+        if (infos && nextPlan.some((mode) => mode !== "drop")) {
+            setConfig((prev) => ({ ...prev, inputShape: countInputs(infos, nextPlan) }));
+        }
+    }
+
+    function handlePlanChange(index, mode) {
+        applyPlan(plan.map((m, i) => (i === index ? mode : m)));
+    }
+
+    function handleAutoPlan() {
+        if (dataset) applyPlan(defaultPlan(dataset.columnInfo));
+    }
+
     async function processFile(file) {
         const currentRead = ++readId.current;
 
         setDataset(null);
+        setPlan([]);
         setFileError("");
         setBundle(null);
         setRun(null);
@@ -125,7 +157,10 @@ export default function TrainingPage() {
             const text = await file.text();
             const parsed = parseDataset(file, text);
             if (currentRead !== readId.current) return;
-            setDataset({ ...parsed, file });
+
+            const columnInfo = analyzeColumns(parsed);
+            setDataset({ ...parsed, file, columnInfo });
+            applyPlan(defaultPlan(columnInfo), columnInfo);
         } catch (err) {
             if (currentRead !== readId.current) return;
             setFileError(err.message || "The file could not be read.");
@@ -136,13 +171,14 @@ export default function TrainingPage() {
 
     function handleSample(sample) {
         setConfig((prev) => ({ ...prev, ...sample.config }));
-        setInputKey((key) => key + 1); // clear the native file input
+        setInputKey((key) => key + 1); 
         processFile(sampleToFile(sample));
     }
 
     function handleClearFile() {
         readId.current++;
         setDataset(null);
+        setPlan([]);
         setFileError("");
         setReading(false);
         setInputKey((key) => key + 1);
@@ -156,9 +192,9 @@ export default function TrainingPage() {
         setConfig(DEFAULT_CONFIG);
     }
 
-    async function startTraining(cfg = config) {
+    async function startTraining(cfg = config, columns = plan) {
         if (busy.current) return;
-        if (validate(cfg, dataset, fileError, reading).length > 0) {
+        if (validate(cfg, dataset, fileError, reading, columns).length > 0) {
             setView("config");
             return;
         }
@@ -171,20 +207,19 @@ export default function TrainingPage() {
         setAttempt((a) => a + 1);
         setView("training");
 
-        // Beri waktu React merender layar progres sebelum training dimulai.
         await new Promise((resolve) => setTimeout(resolve, 50));
 
         const startedAt = performance.now();
         let result;
 
         try {
-            // Dimuat saat dibutuhkan saja, supaya TensorFlow.js tidak membebani halaman awal.
             const tf = await import("@tensorflow/tfjs");
             await tf.ready();
             const { trainModel } = await import("@/utils/training");
             const { createBundle } = await import("@/utils/modelBundle");
 
             result = await trainModel(cfg, dataset, {
+                columns,
                 onEpochEnd: (entry) =>
                     setProgress({ epoch: entry.epoch, loss: entry.loss, valLoss: entry.val_loss }),
             });
@@ -194,6 +229,7 @@ export default function TrainingPage() {
             setBundle(newBundle);
             setRun({
                 config: { ...cfg },
+                plan: [...columns],
                 dataset: {
                     fileName: dataset.fileName,
                     rows: dataset.rows.length,
@@ -222,7 +258,8 @@ export default function TrainingPage() {
     function handleTrainAgain() {
         if (!run) return;
         setConfig(run.config);
-        startTraining(run.config);
+        setPlan(run.plan);
+        startTraining(run.config, run.plan);
     }
 
     function handleNavigate(stage) {
@@ -259,6 +296,21 @@ export default function TrainingPage() {
                             />
                         </ConfigSection>
 
+                        {dataset && plan.length === dataset.columnInfo.length && (
+                            <ConfigSection
+                                id="group-columns"
+                                title="Columns"
+                                description="Convert text to numbers and drop columns you do not need."
+                            >
+                                <ColumnsSection
+                                    dataset={dataset}
+                                    plan={plan}
+                                    onChange={handlePlanChange}
+                                    onAuto={handleAutoPlan}
+                                />
+                            </ConfigSection>
+                        )}
+
                         <ConfigSection
                             id="group-model"
                             title="Model configuration"
@@ -267,7 +319,11 @@ export default function TrainingPage() {
                             <ModelConfigurationForm
                                 config={config}
                                 onChange={handleChange}
-                                featureCount={dataset ? dataset.headers.length - 1 : null}
+                                featureCount={
+                                    dataset && plan.length === dataset.columnInfo.length
+                                        ? countInputs(dataset.columnInfo, plan)
+                                        : null
+                                }
                             />
                         </ConfigSection>
 
