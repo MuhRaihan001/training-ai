@@ -75,9 +75,13 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
                 <h2 id="history-title" className={sectionHeading}>
                     Training history
                 </h2>
-                <div className="mt-4 grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
-                    <TrainingHistoryChart history={history} marks={analysis.marks} />
-                    <TrainingInsight run={run} analysis={analysis} />
+                <div className="mt-4 grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
+                    <div className="min-w-0">
+                        <TrainingHistoryChart history={history} marks={analysis.marks} />
+                    </div>
+                    <div className="min-w-0">
+                        <TrainingInsight run={run} analysis={analysis} />
+                    </div>
                 </div>
             </section>
 

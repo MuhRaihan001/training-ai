@@ -7,6 +7,45 @@ function base64ToArrayBuffer(base64) {
     return bytes.buffer;
 }
 
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const CHUNK = 0x8000;
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+}
+
+export async function createBundle(model, meta) {
+    const tf = await import("@tensorflow/tfjs");
+
+    let artifacts;
+    await model.save(
+        tf.io.withSaveHandler(async (captured) => {
+            artifacts = captured;
+            return {
+                modelArtifactsInfo: {
+                    dateSaved: new Date(),
+                    modelTopologyType: "JSON",
+                },
+            };
+        })
+    );
+
+    const buffer =
+        artifacts.weightData instanceof ArrayBuffer
+            ? artifacts.weightData
+            : tf.io.CompositeArrayBuffer.join(artifacts.weightData);
+
+    return {
+        version: 1,
+        createdAt: new Date().toISOString(),
+        artifacts: { ...artifacts, weightData: arrayBufferToBase64(buffer) },
+        meta,
+    };
+}
+
 function toNumber(cell) {
     const text = String(cell).trim();
     if (text === "") return NaN;

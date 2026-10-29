@@ -67,6 +67,8 @@ export default function TrainingPage() {
     const [bundle, setBundle] = useState(null);
     const [run, setRun] = useState(null);
 
+    const [progress, setProgress] = useState(null);
+
     const busy = useRef(false);
     const headingRef = useRef(null);
     const prevView = useRef(view);
@@ -164,25 +166,32 @@ export default function TrainingPage() {
         busy.current = true;
         setBundle(null);
         setRun(null);
+        setProgress(null);
         setTrainError("");
         setAttempt((a) => a + 1);
         setView("training");
 
-        const formData = new FormData();
-        Object.entries(cfg).forEach(([key, value]) => formData.append(key, String(value)));
-        formData.append("dataset", dataset.file);
+        // Beri waktu React merender layar progres sebelum training dimulai.
+        await new Promise((resolve) => setTimeout(resolve, 50));
 
         const startedAt = performance.now();
+        let result;
 
         try {
-            const res = await fetch("/API/config", { method: "POST", body: formData });
-            const data = await res.json().catch(() => ({}));
+            // Dimuat saat dibutuhkan saja, supaya TensorFlow.js tidak membebani halaman awal.
+            const tf = await import("@tensorflow/tfjs");
+            await tf.ready();
+            const { trainModel } = await import("@/utils/training");
+            const { createBundle } = await import("@/utils/modelBundle");
 
-            if (!res.ok) {
-                throw new Error(data.error || `The server responded with status ${res.status}.`);
-            }
+            result = await trainModel(cfg, dataset, {
+                onEpochEnd: (entry) =>
+                    setProgress({ epoch: entry.epoch, loss: entry.loss, valLoss: entry.val_loss }),
+            });
 
-            setBundle(data.bundle);
+            const newBundle = await createBundle(result.model, result.meta);
+
+            setBundle(newBundle);
             setRun({
                 config: { ...cfg },
                 dataset: {
@@ -191,15 +200,16 @@ export default function TrainingPage() {
                     headers: dataset.headers,
                     delimiter: dataset.delimiter,
                 },
-                history: data.history,
-                meta: data.bundle?.meta,
+                history: result.history,
+                meta: newBundle.meta,
                 durationMs: performance.now() - startedAt,
             });
             setView("results");
         } catch (err) {
-            setTrainError(err.message || "Could not reach the server.");
+            setTrainError(err.message || "Training failed.");
             setView("failed");
         } finally {
+            result?.dispose();
             busy.current = false;
         }
     }
@@ -299,6 +309,7 @@ export default function TrainingPage() {
                         state={view === "training" ? "running" : "failed"}
                         error={trainError}
                         config={config}
+                        progress={progress}
                         dataset={{ fileName: dataset?.fileName ?? "", rows: dataset?.rows ?? [] }}
                         onRetry={() => startTraining()}
                         onBack={() => setView("config")}
@@ -322,7 +333,7 @@ function ConfigSection({ id, title, description, children }) {
     return (
         <section
             aria-labelledby={id}
-            className="grid gap-5 border-t border-stone-200 py-8 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-10"
+            className="grid grid-cols-[minmax(0,1fr)] gap-5 border-t border-stone-200 py-8 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-10"
         >
             <div>
                 <h2 id={id} className="text-sm font-semibold text-stone-900">

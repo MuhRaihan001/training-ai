@@ -9,7 +9,7 @@ import {
     formatClock,
 } from "./ui";
 
-export default function TrainingProgress({ state, error, config, dataset, onRetry, onBack }) {
+export default function TrainingProgress({ state, error, config, dataset, progress, onRetry, onBack }) {
     const [elapsed, setElapsed] = useState(0);
     const running = state === "running";
 
@@ -36,15 +36,21 @@ export default function TrainingProgress({ state, error, config, dataset, onRetr
                         Training in progress
                     </h2>
                     <p className="mt-1 max-w-xl text-sm text-stone-500">
-                        The model trains on the server for {config.epochs} epochs and returns the full history when it
-                        finishes. Per-epoch metrics are not streamed, so progress is shown as elapsed time only.
+                        The model trains in your browser. Keep this tab open until it finishes.
                     </p>
 
                     <progress
-                        aria-label="Training in progress"
+                        aria-label="Training progress"
+                        value={progress?.epoch}
+                        max={config.epochs}
                         className="mt-5 block h-1.5 w-full max-w-md accent-orange-700"
                     />
                     <p className="mt-2 font-mono text-sm tabular-nums text-stone-700">
+                        {progress ? `Epoch ${progress.epoch} / ${config.epochs}` : "Preparing…"}
+                        {progress && Number.isFinite(progress.loss) && ` · loss ${progress.loss.toPrecision(4)}`}
+                        {progress && Number.isFinite(progress.valLoss) && ` · val. loss ${progress.valLoss.toPrecision(4)}`}
+                    </p>
+                    <p className="mt-1 font-mono text-sm tabular-nums text-stone-500">
                         Elapsed {formatClock(elapsed)}
                     </p>
                 </div>

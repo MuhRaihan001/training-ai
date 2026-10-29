@@ -43,7 +43,7 @@ export default function TrainingMetrics({ run }) {
         metrics.push({
             label: "Duration",
             value: formatDuration(durationMs),
-            note: "Request time, incl. upload",
+            note: "Training time in browser",
         });
     }
 
