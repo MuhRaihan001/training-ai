@@ -3,7 +3,7 @@
 import React, { useEffect, useRef } from "react";
 import Link from "next/link";
 
-const APP_NAME = "Training Ai Playground";
+const APP_NAME = "Neural Network Playground";
 
 const NAV_LINKS = [
     { href: "/training", label: "Training" },

@@ -12,7 +12,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Training Ai Playground",
+  title: "Neural Network Playground",
   description: "Melatih model tanpa coding (Tensorflow)",
 };
 
