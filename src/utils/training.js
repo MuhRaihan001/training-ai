@@ -1,5 +1,6 @@
 import * as tf from "@tensorflow/tfjs";
 import { analyzeColumns, buildFeatures, defaultPlan, toNumber } from "@/utils/preprocess";
+import { classificationMetrics, regressionMetrics, splitSizes } from "@/utils/evaluation";
 
 const REGRESSION_LOSSES = new Set([
     "meanSquaredError",
@@ -96,6 +97,7 @@ function encodeTargets(rawTargets, loss, targetName) {
             outputUnits: 1,
             outputActivation: loss === "poisson" ? "softplus" : "linear",
             classes: null,
+            values, // nilai aktual (untuk MAE / RMSE / R²)
         };
     }
 
@@ -125,6 +127,7 @@ function encodeTargets(rawTargets, loss, targetName) {
             outputUnits: 1,
             outputActivation: isHinge ? "linear" : "sigmoid",
             classes,
+            labels, // indeks kelas asli (0 / 1), untuk confusion matrix
         };
     }
 
@@ -145,6 +148,7 @@ function encodeTargets(rawTargets, loss, targetName) {
             outputUnits: classes.length,
             outputActivation: "softmax",
             classes,
+            labels,
         };
     }
 
@@ -213,12 +217,54 @@ function buildModel(config, target, hiddenUnits) {
     model.compile({
         optimizer: createOptimizer(config.optimizer, config.learningRate),
         loss: config.loss,
-        metrics: ACCURACY_LOSSES.has(config.loss) ? ["accuracy"] : [],
+        metrics: ACCURACY_LOSSES.has(config.loss)
+            ? ["accuracy"]
+            : REGRESSION_LOSSES.has(config.loss)
+                ? ["mae"]
+                : [],
     });
 
     return model;
 }
 
+function argmax(values) {
+    let best = 0;
+    for (let i = 1; i < values.length; i++) if (values[i] > values[best]) best = i;
+    return best;
+}
+
+// Evaluasi satu bagian data (train / validation / test) dengan model yang sudah selesai dilatih.
+function evaluateSubset(model, config, target, x, y, start, count) {
+    const result = model.evaluate(x, y, { batchSize: 256, verbose: 0 });
+    const first = Array.isArray(result) ? result[0] : result;
+    const loss = first.dataSync()[0];
+    tf.dispose(result);
+
+    const output = model.predict(x);
+    const predicted = Array.from(output.dataSync());
+    output.dispose();
+
+    if (!target.classes) {
+        const actual = target.values.slice(start, start + count);
+        return { count, loss, ...regressionMetrics(actual, predicted) };
+    }
+
+    const trueLabels = target.labels.slice(start, start + count);
+    let predLabels;
+
+    if (target.outputUnits > 1) {
+        predLabels = trueLabels.map((_, i) =>
+            argmax(predicted.slice(i * target.outputUnits, (i + 1) * target.outputUnits))
+        );
+    } else {
+        const threshold = config.loss === "hinge" || config.loss === "squaredHinge" ? 0 : 0.5;
+        predLabels = predicted.map((v) => (v >= threshold ? 1 : 0));
+    }
+
+    return { count, loss, ...classificationMetrics(trueLabels, predLabels, target.classes) };
+}
+
+// options.columns: array perlakuan kolom fitur ("numeric" | "label" | "onehot" | "drop").
 export async function trainModel(config, dataset, options = {}) {
     const { hiddenUnits = DEFAULT_HIDDEN_UNITS, onEpochEnd, save, columns } = options;
 
@@ -230,17 +276,39 @@ export async function trainModel(config, dataset, options = {}) {
     const { xs, target, targetName, featureNames, featureStats, columns: usedColumns, dropped } =
         prepareData(config, dataset, columns);
     const { ys } = target;
-    const validationSplit = dataset.rows.length >= 10 ? 0.2 : 0;
+
+    // Data sudah diacak: bagian awal untuk training, lalu validation, dan terakhir test.
+    // Test set tidak pernah dipakai saat training maupun saat memilih epoch.
+    const sizes = splitSizes(dataset.rows.length);
+    const ranges = {
+        train: [0, sizes.train],
+        validation: [sizes.train, sizes.validation],
+        test: [sizes.train + sizes.validation, sizes.test],
+    };
+    const subsets = {};
+    for (const [name, [start, count]] of Object.entries(ranges)) {
+        if (count > 0) {
+            subsets[name] = {
+                start,
+                count,
+                x: xs.slice([start, 0], [count, -1]),
+                y: ys.slice([start, 0], [count, -1]),
+            };
+        }
+    }
+
+    const validationSplit = sizes.plan.validation;
+    const testSplit = sizes.plan.test;
     const history = [];
     let model;
 
     try {
         model = buildModel(config, target, hiddenUnits);
 
-        await model.fit(xs, ys, {
+        await model.fit(subsets.train.x, subsets.train.y, {
             epochs: config.epochs,
             batchSize: config.batchSize,
-            validationSplit,
+            validationData: subsets.validation ? [subsets.validation.x, subsets.validation.y] : undefined,
             shuffle: true,
             verbose: 0,
             callbacks: {
@@ -259,16 +327,36 @@ export async function trainModel(config, dataset, options = {}) {
             );
         }
 
+        const evaluation = {
+            kind: target.classes ? "classification" : "regression",
+            classes: target.classes,
+            split: { train: sizes.train, validation: sizes.validation, test: sizes.test },
+            sets: {},
+        };
+        for (const [name, subset] of Object.entries(subsets)) {
+            evaluation.sets[name] = evaluateSubset(
+                model,
+                config,
+                target,
+                subset.x,
+                subset.y,
+                subset.start,
+                subset.count
+            );
+        }
+
         const meta = {
             loss: config.loss,
             optimizer: config.optimizer,
             rowCount: dataset.rows.length,
             validationSplit,
+            testSplit,
+            split: evaluation.split,
             targetName,
-            featureNames,
-            featureStats, 
-            columns: usedColumns,
-            dropped, 
+            featureNames, // nama input model (setelah one-hot)
+            featureStats, // mean/std per input model
+            columns: usedColumns, // kolom yang dipertahankan + cara encoding
+            dropped, // nama kolom yang dibuang
             classes: target.classes,
         };
 
@@ -281,6 +369,7 @@ export async function trainModel(config, dataset, options = {}) {
         return {
             model,
             history,
+            evaluation,
             dispose: () => disposeModel(model),
             meta,
         };
@@ -288,6 +377,10 @@ export async function trainModel(config, dataset, options = {}) {
         disposeModel(model);
         throw error;
     } finally {
+        for (const subset of Object.values(subsets)) {
+            subset.x.dispose();
+            subset.y.dispose();
+        }
         xs.dispose();
         ys.dispose();
     }
