@@ -171,7 +171,7 @@ export default function TrainingPage() {
 
     function handleSample(sample) {
         setConfig((prev) => ({ ...prev, ...sample.config }));
-        setInputKey((key) => key + 1); 
+        setInputKey((key) => key + 1);
         processFile(sampleToFile(sample));
     }
 
@@ -237,6 +237,7 @@ export default function TrainingPage() {
                     delimiter: dataset.delimiter,
                 },
                 history: result.history,
+                evaluation: result.evaluation,   
                 meta: newBundle.meta,
                 durationMs: performance.now() - startedAt,
             });
