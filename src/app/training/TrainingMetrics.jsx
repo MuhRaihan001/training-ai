@@ -4,7 +4,7 @@ import { accuracyOf } from "@/utils/insight";
 import { LOSS_LABELS, fmt, fmtPercent, formatDuration } from "./ui";
 
 export default function TrainingMetrics({ run }) {
-    const { history, config, meta, durationMs } = run;
+    const { history, config, meta, durationMs, evaluation } = run;
     const last = history[history.length - 1];
     const lossName = LOSS_LABELS[config.loss] ?? config.loss;
 
@@ -21,8 +21,8 @@ export default function TrainingMetrics({ run }) {
             label: "Final validation loss",
             value: fmt(last.val_loss),
             note: meta?.validationSplit
-                ? `${Math.round(meta.validationSplit * 100)}% holdout`
-                : "Holdout split",
+                ? `${Math.round(meta.validationSplit * 100)}% validation split`
+                : "Validation split",
         });
 
         let best = 0;
@@ -38,6 +38,17 @@ export default function TrainingMetrics({ run }) {
 
     if (acc) metrics.push({ label: "Training accuracy", value: acc, note: "Final epoch" });
     if (valAcc) metrics.push({ label: "Validation accuracy", value: valAcc, note: "Final epoch" });
+
+    const test = evaluation?.sets?.test;
+    if (test) {
+        const note = `${test.count} held-out rows`;
+        if (evaluation.kind === "classification") {
+            metrics.push({ label: "Test accuracy", value: fmtPercent(test.accuracy), note });
+        } else {
+            metrics.push({ label: "Test RMSE", value: fmt(test.rmse), note });
+            if (test.r2 !== null) metrics.push({ label: "Test R²", value: fmt(test.r2), note });
+        }
+    }
 
     if (Number.isFinite(durationMs)) {
         metrics.push({

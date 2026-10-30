@@ -2,29 +2,59 @@
 
 import { useMemo, useRef, useState } from "react";
 import { accuracyOf } from "@/utils/insight";
+import { maeOf } from "@/utils/evaluation";
 import { fmt, fmtPercent } from "./ui";
 
 const W = 640;
 const H = 300;
 const M = { l: 56, r: 16, t: 16, b: 44 };
 
-const SERIES = [
-    { key: "loss", label: "Training loss", stroke: "#C2410C", dash: undefined },
-    { key: "val_loss", label: "Validation loss", stroke: "#44403C", dash: "6 4" },
-];
+export const CHART_KINDS = {
+    loss: {
+        title: "Loss",
+        series: [
+            { key: "train", label: "Training loss", stroke: "#C2410C", dash: undefined, get: (h) => h.loss },
+            { key: "val", label: "Validation loss", stroke: "#44403C", dash: "6 4", get: (h) => h.val_loss },
+        ],
+        format: fmt,
+    },
+    accuracy: {
+        title: "Accuracy",
+        series: [
+            { key: "train", label: "Training accuracy", stroke: "#C2410C", dash: undefined, get: (h) => accuracyOf(h) },
+            { key: "val", label: "Validation accuracy", stroke: "#44403C", dash: "6 4", get: (h) => accuracyOf(h, true) },
+        ],
+        format: (v) => `${Math.round(v * 100)}%`,
+        tip: fmtPercent,
+        range: [0, 1],
+    },
+    mae: {
+        title: "Mean absolute error (MAE)",
+        series: [
+            { key: "train", label: "Training MAE", stroke: "#C2410C", dash: undefined, get: (h) => maeOf(h) },
+            { key: "val", label: "Validation MAE", stroke: "#44403C", dash: "6 4", get: (h) => maeOf(h, true) },
+        ],
+        format: fmt,
+    },
+};
 
-export default function TrainingHistoryChart({ history, marks = {} }) {
+export function hasMetric(history, kind) {
+    return history.some((h) => CHART_KINDS[kind].series.some((s) => Number.isFinite(s.get(h))));
+}
+
+export default function TrainingHistoryChart({ history, marks = {}, kind = "loss" }) {
     const [active, setActive] = useState(null);
     const svgRef = useRef(null);
+    const spec = CHART_KINDS[kind];
 
     const model = useMemo(() => {
         const n = history.length;
-        const series = SERIES.filter((s) => history.some((h) => Number.isFinite(h[s.key])));
-        const all = series.flatMap((s) => history.map((h) => h[s.key]).filter(Number.isFinite));
+        const series = spec.series.filter((s) => history.some((h) => Number.isFinite(s.get(h))));
+        const all = series.flatMap((s) => history.map((h) => s.get(h)).filter(Number.isFinite));
         if (!n || !all.length) return null;
 
-        const max = Math.max(...all);
-        const min = Math.min(0, ...all);
+        const max = spec.range ? spec.range[1] : Math.max(...all);
+        const min = spec.range ? spec.range[0] : Math.min(0, ...all);
         const pw = W - M.l - M.r;
         const ph = H - M.t - M.b;
         const x = (i) => M.l + (n === 1 ? pw / 2 : (i / (n - 1)) * pw);
@@ -33,7 +63,7 @@ export default function TrainingHistoryChart({ history, marks = {} }) {
         const lines = series.map((s) => ({
             ...s,
             points: history
-                .map((h, i) => (Number.isFinite(h[s.key]) ? `${x(i)},${y(h[s.key])}` : null))
+                .map((h, i) => (Number.isFinite(s.get(h)) ? `${x(i)},${y(s.get(h))}` : null))
                 .filter(Boolean)
                 .join(" "),
         }));
@@ -41,17 +71,18 @@ export default function TrainingHistoryChart({ history, marks = {} }) {
         const xTicks = [...new Set(Array.from({ length: 5 }, (_, t) => Math.round(((n - 1) * t) / 4)))];
 
         return { n, lines, yTicks, xTicks, pw, ph, x, y };
-    }, [history]);
+    }, [history, spec]);
 
     if (!model) {
         return (
             <p className="rounded-md border border-stone-200 bg-white px-4 py-6 text-sm text-stone-500">
-                No loss values were recorded, so there is nothing to plot.
+                No {spec.title.toLowerCase()} values were recorded, so there is nothing to plot.
             </p>
         );
     }
 
     const { n, lines, yTicks, xTicks, pw, ph, x, y } = model;
+    const tipFormat = spec.tip ?? spec.format;
 
     function indexFromPointer(e) {
         const rect = svgRef.current.getBoundingClientRect();
@@ -73,13 +104,16 @@ export default function TrainingHistoryChart({ history, marks = {} }) {
 
     const entry = active != null ? history[active] : null;
     const pct = active != null ? (x(active) / W) * 100 : 0;
-    const tipRows = entry
-        ? [
-              ...lines.map((s) => [s.label, fmt(entry[s.key])]),
-              ["Training accuracy", fmtPercent(accuracyOf(entry))],
-              ["Validation accuracy", fmtPercent(accuracyOf(entry, true))],
-          ].filter(([, v]) => v && v !== "-")
-        : [];
+
+    let tipRows = [];
+    if (entry) {
+        tipRows = lines.map((s) => [s.label, tipFormat(s.get(entry))]);
+        if (kind === "loss") {
+            tipRows.push(["Training accuracy", fmtPercent(accuracyOf(entry))]);
+            tipRows.push(["Validation accuracy", fmtPercent(accuracyOf(entry, true))]);
+        }
+        tipRows = tipRows.filter(([, v]) => v && v !== "-");
+    }
 
     const markList = [
         ["slowdown", "Slows down"],
@@ -104,7 +138,7 @@ export default function TrainingHistoryChart({ history, marks = {} }) {
             <div
                 role="group"
                 tabIndex={0}
-                aria-label="Loss per epoch chart. Use the left and right arrow keys to inspect each epoch. All values are also listed in the epoch details table."
+                aria-label={`${spec.title} per epoch chart. Use the left and right arrow keys to inspect each epoch. All values are also listed in the epoch details table.`}
                 onKeyDown={handleKeyDown}
                 onBlur={() => setActive(null)}
                 className="overflow-x-auto rounded-md border border-stone-200 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-700"
@@ -123,7 +157,7 @@ export default function TrainingHistoryChart({ history, marks = {} }) {
                             <g key={v}>
                                 <line x1={M.l} x2={W - M.r} y1={y(v)} y2={y(v)} stroke="#E7E5E4" />
                                 <text x={M.l - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="#57534E">
-                                    {fmt(v)}
+                                    {spec.format(v)}
                                 </text>
                             </g>
                         ))}
@@ -141,7 +175,7 @@ export default function TrainingHistoryChart({ history, marks = {} }) {
                             fontSize="11"
                             fill="#57534E"
                         >
-                            Loss
+                            {kind === "mae" ? "MAE" : spec.title}
                         </text>
 
                         {markList.map(([key, label], k) => {
@@ -177,7 +211,7 @@ export default function TrainingHistoryChart({ history, marks = {} }) {
 
                         {n === 1 &&
                             lines.map((s) => (
-                                <circle key={s.key} cx={x(0)} cy={y(history[0][s.key])} r="3.5" fill={s.stroke} />
+                                <circle key={s.key} cx={x(0)} cy={y(s.get(history[0]))} r="3.5" fill={s.stroke} />
                             ))}
 
                         {entry && (
@@ -185,11 +219,11 @@ export default function TrainingHistoryChart({ history, marks = {} }) {
                                 <line x1={x(active)} x2={x(active)} y1={M.t} y2={M.t + ph} stroke="#78716C" />
                                 {lines.map(
                                     (s) =>
-                                        Number.isFinite(entry[s.key]) && (
+                                        Number.isFinite(s.get(entry)) && (
                                             <circle
                                                 key={s.key}
                                                 cx={x(active)}
-                                                cy={y(entry[s.key])}
+                                                cy={y(s.get(entry))}
                                                 r="4"
                                                 fill="#FFFFFF"
                                                 stroke={s.stroke}

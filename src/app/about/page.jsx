@@ -53,6 +53,11 @@ const TECHNOLOGY = [
         href: "https://nextjs.org",
     },
     {
+        name: "Tailwind CSS",
+        role: "Application styling",
+        href: "https://tailwindcss.com/"
+    },
+    {
         name: "React",
         role: "User interface library",
         href: "https://react.dev",
@@ -125,26 +130,6 @@ function PurposeSection() {
                     anyone new to neural networks.
                 </p>
             </div>
-        </Section>
-    );
-}
-
-function FeaturesSection() {
-    return (
-        <Section id="features" title="What you can do">
-            <dl className="grid gap-x-10 sm:grid-cols-2">
-                {FEATURES.map((feature) => (
-                    <div
-                        key={feature.name}
-                        className="border-t border-stone-300 pb-8 pt-4"
-                    >
-                        <dt className="font-semibold text-stone-900">{feature.name}</dt>
-                        <dd className="mt-2 max-w-sm leading-relaxed text-stone-700">
-                            {feature.text}
-                        </dd>
-                    </div>
-                ))}
-            </dl>
         </Section>
     );
 }
@@ -256,7 +241,6 @@ export function AboutPage() {
             <div className="mx-auto w-full max-w-6xl px-5 sm:px-8">
                 <ProjectSection />
                 <PurposeSection />
-                <FeaturesSection />
                 <StepsSection />
                 <TechnologySection />
                 <DeveloperSection />

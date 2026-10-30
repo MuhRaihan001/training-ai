@@ -1,10 +1,11 @@
 "use client";
 
 import { useMemo } from "react";
-import { analyzeHistory } from "@/utils/insight";
+import { analyzeHistory, accuracyOf } from "@/utils/insight";
 import TrainingMetrics from "./TrainingMetrics";
-import TrainingHistoryChart from "./TrainingHistoryChart";
+import TrainingHistoryChart, { hasMetric } from "./TrainingHistoryChart";
 import TrainingInsight from "./TrainingInsight";
+import TrainingEvaluation from "./TrainingEvaluation";
 import EpochDetails from "./EpochDetails";
 import TrainingArtifacts from "./TrainingArtifacts";
 import {
@@ -20,6 +21,20 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
     const { config, dataset, history, meta } = run;
     const analysis = useMemo(() => analyzeHistory(history), [history]);
 
+    const metricKind = hasMetric(history, "accuracy") ? "accuracy" : hasMetric(history, "mae") ? "mae" : null;
+    const metricTitle = metricKind === "accuracy" ? "Accuracy" : "Mean absolute error (MAE)";
+
+    const split = meta?.split;
+    const splitText = split
+        ? [
+              `${split.train} train`,
+              split.validation > 0 ? `${split.validation} validation` : null,
+              split.test > 0 ? `${split.test} test` : null,
+          ]
+              .filter(Boolean)
+              .join(" / ")
+        : null;
+
     const summary = [
         ["Dataset", `${dataset.fileName} (${dataset.rows} rows)`],
         ["Architecture", architectureSummary({ config, meta })],
@@ -28,6 +43,7 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
             `${LOSS_LABELS[config.loss] ?? config.loss}, ${OPTIMIZER_LABELS[config.optimizer] ?? config.optimizer} at ${config.learningRate}, batch ${config.batchSize}`,
         ],
         ["Epochs completed", `${history.length} of ${config.epochs}`],
+        ...(splitText ? [["Data split", splitText]] : []),
     ];
 
     return (
@@ -75,15 +91,30 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
                 <h2 id="history-title" className={sectionHeading}>
                     Training history
                 </h2>
+                <p className="mt-3 max-w-2xl text-sm text-stone-600">
+                    Loss{metricKind ? ` and ${metricTitle.toLowerCase()}` : ""} after each epoch, on the training data
+                    {analysis.hasVal ? " and on the validation data." : ". No validation data was available for this dataset."}
+                </p>
                 <div className="mt-4 grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
-                    <div className="min-w-0">
-                        <TrainingHistoryChart history={history} marks={analysis.marks} />
+                    <div className="min-w-0 space-y-8">
+                        <div>
+                            <h3 className="mb-2 text-sm font-medium text-stone-900">Loss</h3>
+                            <TrainingHistoryChart history={history} marks={analysis.marks} kind="loss" />
+                        </div>
+                        {metricKind && (
+                            <div>
+                                <h3 className="mb-2 text-sm font-medium text-stone-900">{metricTitle}</h3>
+                                <TrainingHistoryChart history={history} kind={metricKind} />
+                            </div>
+                        )}
                     </div>
                     <div className="min-w-0">
                         <TrainingInsight run={run} analysis={analysis} />
                     </div>
                 </div>
             </section>
+
+            <TrainingEvaluation run={run} />
 
             <EpochDetails history={history} />
 

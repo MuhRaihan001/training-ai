@@ -1,7 +1,11 @@
+// src/utils/convert.js
+
+import { splitPlan } from "@/utils/evaluation";
+
 const HIDDEN_UNITS = [16, 8];
 const MOMENTUM = 0.9;
 const SEED = 42;
-const MISSING_LABEL = "(kosong)"; 
+const MISSING_LABEL = "(kosong)"; // harus sama dengan preprocess.js
 
 const LOSSES = {
     meanSquaredError: { kind: "regression", keras: "mean_squared_error" },
@@ -35,6 +39,8 @@ const JS_OPTIMIZERS = {
     adadelta: (lr) => `tf.train.adadelta(${lr})`,
 };
 
+// Daftar kolom fitur yang dipertahankan beserta cara encoding-nya.
+// Bundle lama (tanpa meta.columns) dianggap seluruhnya numerik.
 function resolveColumns(dataset, meta) {
     if (Array.isArray(meta?.columns)) {
         return {
@@ -76,6 +82,11 @@ function resolve(config, dataset = {}, meta = {}) {
 
     const { columns, dropped } = resolveColumns(dataset, meta);
 
+    // Proporsi pembagian data sama dengan yang dipakai halaman training.
+    // Bundle lama hanya punya validationSplit, jadi test set dianggap tidak ada.
+    const plan = splitPlan(rowCount);
+    const hasSavedSplit = meta?.validationSplit !== undefined;
+
     return {
         info,
         activation,
@@ -83,12 +94,16 @@ function resolve(config, dataset = {}, meta = {}) {
         dropped,
         fileName: dataset.fileName ?? "dataset.csv",
         delimiter: dataset.delimiter ?? ",",
-        validationSplit: meta?.validationSplit ?? (rowCount >= 10 ? 0.2 : 0),
+        validationSplit: hasSavedSplit ? meta.validationSplit : plan.validation,
+        testSplit: hasSavedSplit ? (meta.testSplit ?? 0) : plan.test,
     };
 }
 
+// Satu objek per baris, JSON valid sekaligus literal Python/JavaScript yang valid.
 const literalList = (items) =>
     "[\n" + items.map((item) => "    " + JSON.stringify(item)).join(",\n") + "\n]";
+
+/* ------------------------------ Python ------------------------------ */
 
 function pythonTarget(info, loss) {
     if (info.kind === "regression") {
@@ -132,6 +147,71 @@ OUTPUT_UNITS = len(classes)`
     );
 }
 
+// Ekspresi label aktual / prediksi untuk klasifikasi, mengikuti cara aplikasi menghitungnya.
+function pythonLabels(info) {
+    if (info.kind === "binary") {
+        const threshold = info.hinge ? "0" : "0.5";
+        return {
+            actual: info.hinge
+                ? "(y_part.reshape(-1) > 0).astype(int)"
+                : "y_part.reshape(-1).astype(int)",
+            predicted: `(probs.reshape(-1) >= ${threshold}).astype(int)`,
+        };
+    }
+
+    return {
+        actual: info.encoding === "sparse" ? "y_part.reshape(-1).astype(int)" : "y_part.argmax(axis=1)",
+        predicted: "probs.argmax(axis=1)",
+    };
+}
+
+function pythonEvaluate(info) {
+    if (info.kind === "regression") {
+        return String.raw`def evaluate(name, X_part, y_part):
+    loss = model.evaluate(X_part, y_part, verbose=0)
+    loss = loss[0] if isinstance(loss, (list, tuple)) else loss
+    predicted = model.predict(X_part, verbose=0).reshape(-1)
+    actual = y_part.reshape(-1)
+    residual = actual - predicted
+
+    ss_tot = np.sum((actual - actual.mean()) ** 2)
+    r2 = 1 - np.sum(residual ** 2) / ss_tot if ss_tot > 0 else float("nan")
+
+    print(f"[{name}] n={len(actual)} loss={loss:.4f} MAE={np.mean(np.abs(residual)):.4f} "
+          f"RMSE={np.sqrt(np.mean(residual ** 2)):.4f} R2={r2:.4f}")`;
+    }
+
+    const labels = pythonLabels(info);
+
+    return String.raw`def evaluate(name, X_part, y_part):
+    loss = model.evaluate(X_part, y_part, verbose=0)
+    loss = loss[0] if isinstance(loss, (list, tuple)) else loss
+    probs = model.predict(X_part, verbose=0)
+
+    actual = ${labels.actual}
+    predicted = ${labels.predicted}
+
+    k = len(classes)
+    matrix = np.zeros((k, k), dtype=int)  # rows = actual class, columns = predicted class
+    np.add.at(matrix, (actual, predicted), 1)
+
+    tp = np.diag(matrix).astype(float)
+    support = matrix.sum(axis=1)
+    predicted_count = matrix.sum(axis=0)
+    precision = np.divide(tp, predicted_count, out=np.zeros(k), where=predicted_count > 0)
+    recall = np.divide(tp, support, out=np.zeros(k), where=support > 0)
+    denominator = precision + recall
+    f1 = np.divide(2 * precision * recall, denominator, out=np.zeros(k), where=denominator > 0)
+
+    print(f"[{name}] n={len(actual)} loss={loss:.4f} accuracy={tp.sum() / len(actual):.4f}")
+    print(f"{'class':<20}{'precision':>10}{'recall':>10}{'f1-score':>10}{'support':>9}")
+    for i, label in enumerate(classes):
+        print(f"{label[:19]:<20}{precision[i]:>10.4f}{recall[i]:>10.4f}{f1[i]:>10.4f}{support[i]:>9d}")
+    print(f"{'macro avg':<20}{precision.mean():>10.4f}{recall.mean():>10.4f}{f1.mean():>10.4f}{len(actual):>9d}")
+    print("Confusion matrix (rows = actual, columns = predicted):")
+    print(matrix)`;
+}
+
 export function generatePythonCode({ config, dataset, meta }) {
     const r = resolve(config, dataset, meta);
     const { info } = r;
@@ -141,7 +221,7 @@ export function generatePythonCode({ config, dataset, meta }) {
         .join("\n");
 
     const optimizer = PY_OPTIMIZERS[config.optimizer]("LEARNING_RATE");
-    const metrics = info.accuracy ? '["accuracy"]' : "[]";
+    const metrics = info.accuracy ? '["accuracy"]' : info.kind === "regression" ? '["mae"]' : "[]";
 
     return String.raw`# Training code automatically generated from the training page configuration
 # Installation: pip install tensorflow pandas numpy
@@ -162,6 +242,7 @@ EPOCHS = ${config.epochs}
 BATCH_SIZE = ${config.batchSize}
 LEARNING_RATE = ${config.learningRate}
 VALIDATION_SPLIT = ${r.validationSplit}
+TEST_SPLIT = ${r.testSplit}
 SEED = ${SEED}
 MISSING = ${JSON.stringify(MISSING_LABEL)}
 
@@ -236,9 +317,18 @@ X = ((X - mean) / std).astype("float32")
 # Target
 ${pythonTarget(info, config.loss)}
 
-# Shuffle data before the validation split
+# Shuffle, then split into train / validation / test.
+# The test set is never used for training or for choosing the number of epochs.
 order = np.random.default_rng(SEED).permutation(len(X))
 X, y = X[order], y[order]
+
+n_test = max(1, int(len(X) * TEST_SPLIT + 0.5)) if TEST_SPLIT > 0 else 0
+n_val = max(1, int(len(X) * VALIDATION_SPLIT + 0.5)) if VALIDATION_SPLIT > 0 else 0
+n_train = len(X) - n_val - n_test
+
+X_train, y_train = X[:n_train], y[:n_train]
+X_val, y_val = X[n_train:n_train + n_val], y[n_train:n_train + n_val]
+X_test, y_test = X[n_train + n_val:], y[n_train + n_val:]
 
 tf.keras.utils.set_random_seed(SEED)
 
@@ -255,16 +345,29 @@ model.compile(
 )
 
 history = model.fit(
-    X, y,
+    X_train, y_train,
     epochs=EPOCHS,
     batch_size=BATCH_SIZE,
-    validation_split=VALIDATION_SPLIT,
+    validation_data=(X_val, y_val) if n_val else None,
     shuffle=True,
     verbose=2,
 )
 
 if not np.isfinite(history.history["loss"][-1]):
     raise RuntimeError("Loss became NaN or infinite. Lower the learning rate or check for extreme values in the dataset.")
+
+
+${pythonEvaluate(info)}
+
+
+# Evaluation on every part of the data. Judge the model by the test numbers.
+for name, (X_part, y_part) in {
+    "train": (X_train, y_train),
+    "validation": (X_val, y_val),
+    "test": (X_test, y_test),
+}.items():
+    if len(X_part) > 0:
+        evaluate(name, X_part, y_part)
 
 model.save("model.keras")
 
@@ -282,6 +385,118 @@ with open("preprocessing.json", "w", encoding="utf-8") as f:
 
 print("Prediction example (first row):", model.predict(X[:1], verbose=0))
 `;
+}
+
+/* ------------------------------ Node.js ------------------------------ */
+
+// Fungsi evaluate() untuk kode Node.js: metrik yang sama dengan halaman training.
+function nodeEvaluate(info) {
+    const common = String.raw`function readLoss(result) {
+    const first = Array.isArray(result) ? result[0] : result;
+    const value = first.dataSync()[0];
+    tf.dispose(result);
+    return value;
+}
+
+function readValues(tensor) {
+    const values = Array.from(tensor.dataSync());
+    tensor.dispose();
+    return values;
+}
+
+`;
+
+    if (info.kind === "regression") {
+        return (
+            common +
+            String.raw`function evaluate(model, classes, name, xPart, yPart) {
+    const count = xPart.shape[0];
+    const loss = readLoss(model.evaluate(xPart, yPart, { verbose: 0 }));
+    const predicted = readValues(model.predict(xPart));
+    const actual = Array.from(yPart.dataSync());
+
+    const residual = actual.map((a, i) => a - predicted[i]);
+    const mean = actual.reduce((s, v) => s + v, 0) / count;
+    const ssRes = residual.reduce((s, v) => s + v * v, 0);
+    const ssTot = actual.reduce((s, v) => s + (v - mean) ** 2, 0);
+    const mae = residual.reduce((s, v) => s + Math.abs(v), 0) / count;
+    const rmse = Math.sqrt(ssRes / count);
+    const r2 = ssTot > 0 ? 1 - ssRes / ssTot : NaN;
+
+    console.log(
+        "[" + name + "] n=" + count + " loss=" + loss.toFixed(4) +
+        " MAE=" + mae.toFixed(4) + " RMSE=" + rmse.toFixed(4) + " R2=" + r2.toFixed(4)
+    );
+}`
+        );
+    }
+
+    let labels;
+    if (info.kind === "binary") {
+        const threshold = info.hinge ? "0" : "0.5";
+        labels = String.raw`    const actualLabels = target.map((v) => (v > 0 ? 1 : 0));
+    const predictedLabels = predicted.map((v) => (v >= ${threshold} ? 1 : 0));`;
+    } else {
+        const actual =
+            info.encoding === "sparse" ? "target.map((v) => Math.round(v))" : "argmaxRows(target)";
+        labels = String.raw`    const argmaxRows = (values) =>
+        Array.from({ length: values.length / k }, (_, i) =>
+            values.slice(i * k, (i + 1) * k).reduce((best, v, j, row) => (v > row[best] ? j : best), 0)
+        );
+    const actualLabels = ${actual};
+    const predictedLabels = argmaxRows(predicted);`;
+    }
+
+    return (
+        common +
+        String.raw`function evaluate(model, classes, name, xPart, yPart) {
+    const count = xPart.shape[0];
+    const loss = readLoss(model.evaluate(xPart, yPart, { verbose: 0 }));
+    const predicted = readValues(model.predict(xPart));
+    const target = Array.from(yPart.dataSync());
+    const k = classes.length;
+
+${labels}
+
+    // matrix[actual][predicted]
+    const matrix = Array.from({ length: k }, () => new Array(k).fill(0));
+    actualLabels.forEach((a, i) => matrix[a][predictedLabels[i]]++);
+
+    const correct = matrix.reduce((sum, row, i) => sum + row[i], 0);
+    console.log(
+        "[" + name + "] n=" + count + " loss=" + loss.toFixed(4) +
+        " accuracy=" + (correct / count).toFixed(4)
+    );
+    console.log("class".padEnd(20) + "precision".padStart(10) + "recall".padStart(10) + "f1-score".padStart(10) + "support".padStart(9));
+
+    const totals = { precision: 0, recall: 0, f1: 0 };
+
+    classes.forEach((label, c) => {
+        const tp = matrix[c][c];
+        const support = matrix[c].reduce((a, b) => a + b, 0);
+        const predictedCount = matrix.reduce((s, row) => s + row[c], 0);
+        const precision = predictedCount ? tp / predictedCount : 0;
+        const recall = support ? tp / support : 0;
+        const f1 = precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
+
+        totals.precision += precision / k;
+        totals.recall += recall / k;
+        totals.f1 += f1 / k;
+
+        console.log(
+            label.slice(0, 19).padEnd(20) + precision.toFixed(4).padStart(10) +
+            recall.toFixed(4).padStart(10) + f1.toFixed(4).padStart(10) + String(support).padStart(9)
+        );
+    });
+
+    console.log(
+        "macro avg".padEnd(20) + totals.precision.toFixed(4).padStart(10) +
+        totals.recall.toFixed(4).padStart(10) + totals.f1.toFixed(4).padStart(10) + String(count).padStart(9)
+    );
+    console.log("Confusion matrix (rows = actual, columns = predicted):");
+    matrix.forEach((row, i) => console.log(classes[i].slice(0, 12).padEnd(14) + row.join("\t")));
+}`
+    );
 }
 
 function nodeTarget(info, loss) {
@@ -357,7 +572,7 @@ export function generateNodeCode({ config, dataset, meta }) {
     ).join("\n");
 
     const optimizer = JS_OPTIMIZERS[config.optimizer]("LEARNING_RATE");
-    const metrics = info.accuracy ? '["accuracy"]' : "[]";
+    const metrics = info.accuracy ? '["accuracy"]' : info.kind === "regression" ? '["mae"]' : "[]";
 
     return String.raw`// Training code automatically generated from the training page configuration
 // Installation: npm install @tensorflow/tfjs-node
@@ -372,6 +587,7 @@ const EPOCHS = ${config.epochs};
 const BATCH_SIZE = ${config.batchSize};
 const LEARNING_RATE = ${config.learningRate};
 const VALIDATION_SPLIT = ${r.validationSplit};
+const TEST_SPLIT = ${r.testSplit};
 const OUTPUT_DIR = "./model-output";
 const MISSING = ${JSON.stringify(MISSING_LABEL)};
 
@@ -552,6 +768,8 @@ function standardize(matrix, scale) {
 
 ${nodeTarget(info, config.loss)}
 
+${nodeEvaluate(info)}
+
 async function main() {
     const text = fs.readFileSync(CSV_PATH, "utf8").replace(/^\uFEFF/, "");
     const [headers, ...rows] = parseCsv(text, DELIMITER);
@@ -574,6 +792,22 @@ async function main() {
     const xs = tf.tensor2d(scaled, [rows.length, INPUT_SHAPE]);
     const { ys, outputUnits, classes } = encodeTargets(rawTargets);
 
+    // Data is already shuffled: split into train / validation / test.
+    // The test set is never used for training or for choosing the number of epochs.
+    const total = rows.length;
+    const testCount = TEST_SPLIT > 0 ? Math.max(1, Math.round(total * TEST_SPLIT)) : 0;
+    const valCount = VALIDATION_SPLIT > 0 ? Math.max(1, Math.round(total * VALIDATION_SPLIT)) : 0;
+    const trainCount = total - valCount - testCount;
+
+    const part = (tensor, start, count) =>
+        count > 0 ? tensor.slice([start, 0], [count, -1]) : null;
+
+    const parts = {
+        train: [part(xs, 0, trainCount), part(ys, 0, trainCount)],
+        validation: [part(xs, trainCount, valCount), part(ys, trainCount, valCount)],
+        test: [part(xs, trainCount + valCount, testCount), part(ys, trainCount + valCount, testCount)],
+    };
+
     const model = tf.sequential();
 
 ${hidden}
@@ -590,10 +824,10 @@ ${hidden}
 
     const history = [];
 
-    await model.fit(xs, ys, {
+    await model.fit(parts.train[0], parts.train[1], {
         epochs: EPOCHS,
         batchSize: BATCH_SIZE,
-        validationSplit: VALIDATION_SPLIT,
+        validationData: parts.validation[0] ? parts.validation : undefined,
         shuffle: true,
         verbose: 0,
         callbacks: {
@@ -616,6 +850,11 @@ ${hidden}
         throw new Error("Loss became NaN or infinite. Lower the learning rate or check for extreme values in the dataset.");
     }
 
+    // Evaluation on every part of the data. Judge the model by the test numbers.
+    for (const [name, [xPart, yPart]] of Object.entries(parts)) {
+        if (xPart) evaluate(model, classes, name, xPart, yPart);
+    }
+
     await model.save("file://" + OUTPUT_DIR);
 
     // Everything needed to preprocess new data the same way before calling model.predict()
@@ -628,6 +867,12 @@ ${hidden}
         )
     );
 
+    for (const [xPart, yPart] of Object.values(parts)) {
+        if (xPart) {
+            xPart.dispose();
+            yPart.dispose();
+        }
+    }
     xs.dispose();
     ys.dispose();
 

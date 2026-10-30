@@ -1,12 +1,15 @@
 "use client";
 
 import { accuracyOf } from "@/utils/insight";
+import { maeOf } from "@/utils/evaluation";
 import { fmtPercent, fmtPrecise, focusRing } from "./ui";
 
 export default function EpochDetails({ history }) {
     const hasVal = history.length > 0 && history.every((h) => Number.isFinite(h.val_loss));
     const hasAcc = history.some((h) => Number.isFinite(accuracyOf(h)));
     const hasValAcc = history.some((h) => Number.isFinite(accuracyOf(h, true)));
+    const hasMae = history.some((h) => Number.isFinite(maeOf(h)));
+    const hasValMae = history.some((h) => Number.isFinite(maeOf(h, true)));
 
     let best = -1;
     if (hasVal) {
@@ -43,6 +46,8 @@ export default function EpochDetails({ history }) {
                                 {hasVal && <th scope="col" className={th}>Val. loss</th>}
                                 {hasAcc && <th scope="col" className={th}>Train acc.</th>}
                                 {hasValAcc && <th scope="col" className={th}>Val. acc.</th>}
+                                {hasMae && <th scope="col" className={th}>Train MAE</th>}
+                                {hasValMae && <th scope="col" className={th}>Val. MAE</th>}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-stone-200">
@@ -60,6 +65,8 @@ export default function EpochDetails({ history }) {
                                     {hasVal && <td className={td}>{fmtPrecise(h.val_loss)}</td>}
                                     {hasAcc && <td className={td}>{fmtPercent(accuracyOf(h)) ?? "-"}</td>}
                                     {hasValAcc && <td className={td}>{fmtPercent(accuracyOf(h, true)) ?? "-"}</td>}
+                                    {hasMae && <td className={td}>{fmtPrecise(maeOf(h))}</td>}
+                                    {hasValMae && <td className={td}>{fmtPrecise(maeOf(h, true))}</td>}
                                 </tr>
                             ))}
                         </tbody>
