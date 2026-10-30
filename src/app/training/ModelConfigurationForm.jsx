@@ -114,7 +114,7 @@ export default function ModelConfigurationForm({ config, onChange, featureCount 
                         name="learningRate"
                         min="0.000001"
                         max="1"
-                        step="any"
+                        step="0.000001"
                         required
                         value={config.learningRate}
                         onChange={onChange}
