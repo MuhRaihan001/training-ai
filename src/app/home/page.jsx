@@ -6,8 +6,9 @@ import Link from "next/link";
 const APP_NAME = "Neural Network Playground";
 
 const NAV_LINKS = [
+    { href: "#about", label: "About Us"  },
     { href: "/training", label: "Training" },
-    { href: "/test", label: "Tes Model" },
+    { href: "/test", label: "Run Model" },
 ];
 
 const BASE_COLOR = "250, 250, 249";
@@ -317,7 +318,7 @@ export default function HomePage() {
                                 Neural Network Playground
                             </span> <br></br>
                             <span className="text-stone-600">
-                                Atur model, latih model, dan uji hasil prediksi secara interaktif tanpa coding.
+                                Configure models, train models, and test prediction results interactively without any coding.
                             </span>
                         </h1>
 
@@ -331,7 +332,7 @@ export default function HomePage() {
                                     focusClass
                                 }
                             >
-                                Mulai Training
+                                Start Training
                             </Link>
 
                             <Link
@@ -343,7 +344,7 @@ export default function HomePage() {
                                     focusClass
                                 }
                             >
-                                Tes Model
+                                Run Model
                             </Link>
                         </div>
                     </div>
