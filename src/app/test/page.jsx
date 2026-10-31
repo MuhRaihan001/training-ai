@@ -18,15 +18,15 @@ const fileClass =
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-700 " +
     "focus-visible:ring-offset-2 focus-visible:ring-offset-stone-50";
 
-const numberFormat = new Intl.NumberFormat("id-ID", { maximumFractionDigits: 4 });
-const percentFormat = new Intl.NumberFormat("id-ID", {
+const numberFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
+const percentFormat = new Intl.NumberFormat("en-US", {
     style: "percent",
     maximumFractionDigits: 1,
 });
 
 const MODE_HINTS = {
-    onehot: "Teks, dikonversi menjadi one-hot",
-    label: "Teks, dikonversi menjadi angka (label)",
+    onehot: "Text, converted to one-hot",
+    label: "Text, converted to numbers (label)",
 };
 
 export default function TestModelPage() {
@@ -72,7 +72,7 @@ export default function TestModelPage() {
             setInputs(next.meta.columns.map(() => ""));
         } catch (err) {
             setLoaded(null);
-            setError(err.message || "Model tidak dapat dimuat.");
+            setError(err.message || "The model could not be loaded.");
         } finally {
             setLoading(false);
         }
@@ -101,7 +101,7 @@ export default function TestModelPage() {
             setRunId((id) => id + 1);
         } catch (err) {
             resetOutput();
-            setError(err.message || "Prediksi gagal.");
+            setError(err.message || "Prediction failed.");
         } finally {
             setPredicting(false);
         }
@@ -115,16 +115,16 @@ export default function TestModelPage() {
             <div className="mx-auto w-full max-w-4xl px-5 py-10 sm:px-8 sm:py-16">
                 <header className="max-w-2xl">
                     <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                        Tes Model
+                        Test Model
                     </h1>
                     <p className="mt-2 text-base text-stone-600">
-                        Muat file model hasil training, lalu coba prediksi dengan data baru.
+                        Load the trained model file, then try a prediction with new data.
                     </p>
                     <Link
                         href="/training"
                         className="mt-3 inline-block text-sm font-medium underline underline-offset-4 hover:text-orange-800"
                     >
-                        Kembali ke training
+                        Back to training
                     </Link>
                 </header>
 
@@ -133,14 +133,14 @@ export default function TestModelPage() {
                         id="group-load"
                         className="border-b border-stone-900 pb-2 text-sm font-semibold"
                     >
-                        Muat model
+                        Load model
                     </h2>
                     <div className="py-5">
                         <label htmlFor="model-file" className="block text-sm font-medium">
-                            File model (.json)
+                            Model file (.json)
                         </label>
                         <p id="model-file-hint" className="mb-3 mt-1 text-sm text-stone-600">
-                            Gunakan file yang diunduh lewat tombol Download Model.
+                            Use the file downloaded with the Download Model button.
                         </p>
                         <input
                             type="file"
@@ -152,7 +152,7 @@ export default function TestModelPage() {
                         />
                         {loading && (
                             <p role="status" className="mt-2 text-sm text-stone-600">
-                                Memuat model...
+                                Loading model...
                             </p>
                         )}
                     </div>
@@ -163,7 +163,7 @@ export default function TestModelPage() {
                         role="alert"
                         className="mt-4 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800"
                     >
-                        <span className="font-semibold">Perlu diperbaiki: </span>
+                        <span className="font-semibold">Needs fixing: </span>
                         {error}
                     </p>
                 )}
@@ -175,14 +175,14 @@ export default function TestModelPage() {
                                 id="group-info"
                                 className="border-b border-stone-900 pb-2 text-sm font-semibold"
                             >
-                                Info model
+                                Model info
                             </h2>
                             <dl className="grid grid-cols-2 gap-x-6 gap-y-4 py-5 sm:grid-cols-4">
                                 {[
                                     ["Target", meta.targetName],
                                     ["Loss", meta.loss],
                                     ["Optimizer", meta.optimizer],
-                                    ["Data latih", numberFormat.format(meta.rowCount) + " baris"],
+                                    ["Training data", numberFormat.format(meta.rowCount) + " rows"],
                                 ].map(([label, value]) => (
                                     <div key={label} className="min-w-0">
                                         <dt className="text-sm text-stone-600">{label}</dt>
@@ -193,26 +193,26 @@ export default function TestModelPage() {
                                 ))}
                             </dl>
                             <p className="text-sm text-stone-600">
-                                Input model:{" "}
+                                Model inputs:{" "}
                                 <span className="font-mono">{numberFormat.format(meta.featureNames.length)}</span>{" "}
-                                dari {meta.columns.length} kolom
+                                from {meta.columns.length} columns
                                 {dropped.length > 0 && (
                                     <>
-                                        . Kolom yang dibuang saat training:{" "}
+                                        . Columns dropped during training:{" "}
                                         <span className="font-mono">{dropped.join(", ")}</span>
                                     </>
                                 )}
                             </p>
                             {meta.classes && (
                                 <p className="mt-1 text-sm text-stone-600">
-                                    Kelas: <span className="font-mono">{meta.classes.join(", ")}</span>
+                                    Classes: <span className="font-mono">{meta.classes.join(", ")}</span>
                                 </p>
                             )}
                         </section>
 
                         <form onSubmit={handlePredict} className="mt-10">
                             <h2 className="border-b border-stone-900 pb-2 text-sm font-semibold">
-                                Input fitur
+                                Feature inputs
                             </h2>
 
                             <div className="divide-y divide-stone-200">
@@ -247,7 +247,7 @@ export default function TestModelPage() {
                                                     className={inputClass}
                                                 >
                                                     <option value="" disabled>
-                                                        Pilih nilai
+                                                        Select a value
                                                     </option>
                                                     {col.categories.map((c) => (
                                                         <option key={c} value={c}>
@@ -277,7 +277,7 @@ export default function TestModelPage() {
                                 disabled={predicting}
                                 className="mt-4 inline-flex h-11 w-full items-center justify-center rounded-md bg-orange-700 px-5 text-sm font-medium text-white transition-colors hover:bg-orange-800 active:bg-orange-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-700 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-50 disabled:cursor-not-allowed disabled:bg-stone-400 motion-reduce:transition-none sm:w-auto"
                             >
-                                {predicting ? "Memprediksi..." : "Prediksi"}
+                                {predicting ? "Predicting..." : "Predict"}
                             </button>
                         </form>
 
@@ -297,7 +297,7 @@ export default function TestModelPage() {
                                 className="mt-8 rounded-md border border-green-300 bg-green-50 px-4 py-4"
                             >
                                 <h2 id="group-result" className="text-sm font-semibold text-green-900">
-                                    Hasil prediksi untuk {meta.targetName}
+                                    Prediction result for {meta.targetName}
                                 </h2>
 
                                 <p className="mt-1 font-mono text-2xl tabular-nums text-green-900">

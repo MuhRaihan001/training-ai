@@ -21,13 +21,13 @@ const ACTIVATION_NAMES = {
 const PROBABILITY = new Set(["softmax", "sigmoid"]);
 
 const SPEEDS = [
-    { id: "slow", label: "Lambat", delay: 900 },
+    { id: "slow", label: "Slow", delay: 900 },
     { id: "normal", label: "Normal", delay: 450 },
-    { id: "fast", label: "Cepat", delay: 140 },
+    { id: "fast", label: "Fast", delay: 140 },
 ];
 
-const number = new Intl.NumberFormat("id-ID", { maximumFractionDigits: 3 });
-const percent = new Intl.NumberFormat("id-ID", { style: "percent", maximumFractionDigits: 1 });
+const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 });
+const percent = new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 });
 
 const btn =
     "inline-flex h-11 items-center justify-center rounded-md border border-stone-500 bg-white px-5 " +
@@ -47,7 +47,7 @@ function shorten(text, max) {
     return value.length > max ? value.slice(0, max - 1) + "…" : value;
 }
 
-// Jika neuron terlalu banyak, tampilkan yang nilainya paling besar saja.
+// If there are too many neurons, show only the ones with the largest values.
 function pickIndices(values, max) {
     const all = values.map((_, i) => i);
     if (all.length <= max) return all;
@@ -69,14 +69,14 @@ function buildView(data) {
         const peak = Math.max(...layer.values.map(Math.abs)) || 1;
         const title =
             l === 0
-                ? "Lapisan input"
+                ? "Input layer"
                 : l === count - 1
-                    ? "Lapisan output"
-                    : `Lapisan tersembunyi ${l}`;
+                    ? "Output layer"
+                    : `Hidden layer ${l}`;
         return { ...layer, shown, peak, title };
     });
 
-    // Urutan langkah: neuron demi neuron, lapisan demi lapisan (tanpa lapisan input).
+    // Step order: neuron by neuron, layer by layer (excluding the input layer).
     const steps = [];
     const offsets = [];
     layers.forEach((layer, l) => {
@@ -131,7 +131,7 @@ export default function NetworkVisualizer({ data, result, onDone }) {
             ? outputLayer.values.indexOf(Math.max(...outputLayer.values))
             : 0;
 
-    // Tooltip neuron: posisi relatif terhadap kotak diagram, dijepit agar tidak keluar tepi.
+    // Neuron tooltip: positioned relative to the diagram box, clamped so it doesn't overflow the edges.
     function show(l, pos, el) {
         const box = boxRef.current;
         if (!box) return;
@@ -162,10 +162,10 @@ export default function NetworkVisualizer({ data, result, onDone }) {
         if (l === 0) {
             return {
                 title: layer.labels[index],
-                subtitle: `${layer.title}, fitur ${index + 1}`,
+                subtitle: `${layer.title}, feature ${index + 1}`,
                 rows: [
-                    ["Nilai asli", number.format(layer.raw[index])],
-                    ["Setelah standardisasi", number.format(layer.values[index])],
+                    ["Original value", number.format(layer.raw[index])],
+                    ["After standardization", number.format(layer.values[index])],
                 ],
                 top: null,
             };
@@ -175,7 +175,7 @@ export default function NetworkVisualizer({ data, result, onDone }) {
         const subtitle = layer.title;
 
         if (offsets[l] + pos >= step) {
-            return { title, subtitle, rows: [["Status", "Belum dihitung"]], top: null };
+            return { title, subtitle, rows: [["Status", "Not yet calculated"]], top: null };
         }
 
         const prev = layers[l - 1];
@@ -195,8 +195,8 @@ export default function NetworkVisualizer({ data, result, onDone }) {
             subtitle,
             rows: [
                 ["Bias", number.format(layer.biases[index])],
-                ["Jumlah terbobot + bias", number.format(layer.pre[index])],
-                [`Aktivasi ${name}`, valueText(layer, layer.values[index])],
+                ["Weighted sum + bias", number.format(layer.pre[index])],
+                [`${name} activation`, valueText(layer, layer.values[index])],
             ],
             top,
         };
@@ -204,7 +204,7 @@ export default function NetworkVisualizer({ data, result, onDone }) {
 
     const tip = hover ? describeNeuron(hover.l, hover.pos) : null;
 
-    // Garis antar neuron: yang sedang dihitung (atau di-hover) digambar paling akhir (di atas).
+    // Edges between neurons: the one being computed (or hovered) is drawn last (on top).
     const edges = [];
     for (let l = 1; l < layers.length; l++) {
         const prev = layers[l - 1];
@@ -253,18 +253,18 @@ export default function NetworkVisualizer({ data, result, onDone }) {
         return { stroke: "#d6d3d1", strokeWidth: 0.8, strokeOpacity: 0.5 };
     }
 
-    // Teks penjelasan langkah saat ini.
+    // Explanation text for the current step.
     let narration;
     if (step === 0) {
         narration =
-            "Nilai fitur sudah distandardisasi dan masuk ke lapisan input. Tekan Putar atau Langkah untuk memulai perhitungan.";
+            "The feature values have been standardized and fed into the input layer. Press Play or Step to start the calculation.";
     } else if (finished) {
         if (outputLayer.values.length > 1) {
-            narration = `Semua lapisan selesai dihitung. Neuron output "${data.outputLabels[winner]}" memiliki nilai tertinggi (${valueText(outputLayer, outputLayer.values[winner])}), sehingga keputusan model adalah ${result?.label ?? data.outputLabels[winner]}.`;
+            narration = `All layers have been calculated. The output neuron "${data.outputLabels[winner]}" has the highest value (${valueText(outputLayer, outputLayer.values[winner])}), so the model's decision is ${result?.label ?? data.outputLabels[winner]}.`;
         } else if (result?.label !== undefined) {
-            narration = `Semua lapisan selesai dihitung. Neuron output bernilai ${valueText(outputLayer, outputLayer.values[0])}, sehingga model memutuskan kelas ${result.label}.`;
+            narration = `All layers have been calculated. The output neuron's value is ${valueText(outputLayer, outputLayer.values[0])}, so the model decides on class ${result.label}.`;
         } else {
-            narration = `Semua lapisan selesai dihitung. Neuron output bernilai ${number.format(outputLayer.values[0])}, itulah nilai prediksi model.`;
+            narration = `All layers have been calculated. The output neuron's value is ${number.format(outputLayer.values[0])}, which is the model's predicted value.`;
         }
     } else {
         const cur = steps[step - 1];
@@ -272,14 +272,14 @@ export default function NetworkVisualizer({ data, result, onDone }) {
         const name = ACTIVATION_NAMES[layer.activation] ?? layer.activation;
         const who =
             cur.l === last
-                ? `neuron output "${data.outputLabels[cur.index]}"`
+                ? `output neuron "${data.outputLabels[cur.index]}"`
                 : `neuron ${cur.index + 1}`;
         const z = layer.pre[cur.index];
         const off =
             layer.activation === "relu" && z <= 0
-                ? " Hasilnya 0, jadi neuron ini tidak menyala."
+                ? " The result is 0, so this neuron does not fire."
                 : "";
-        narration = `${layer.title}, ${who}: jumlah masukan terbobot ditambah bias bernilai ${number.format(z)}. Aktivasi ${name} menghasilkan ${valueText(layer, layer.values[cur.index])}.${off}`;
+        narration = `${layer.title}, ${who}: the weighted sum of inputs plus bias is ${number.format(z)}. The ${name} activation produces ${valueText(layer, layer.values[cur.index])}.${off}`;
     }
 
     const truncated = layers.some((layer) => layer.shown.length < layer.values.length);
@@ -299,22 +299,22 @@ export default function NetworkVisualizer({ data, result, onDone }) {
                 id="group-network"
                 className="border-b border-stone-900 pb-2 text-sm font-semibold"
             >
-                Proses pengambilan keputusan
+                Decision-making process
             </h2>
 
             <div className="py-5">
                 <div className="mb-3 flex flex-wrap gap-x-6 gap-y-2 text-sm text-stone-700">
                     <span className="inline-flex items-center gap-2">
                         <span className="inline-block w-6" style={{ borderTop: "3px solid #c2410c" }} />
-                        Dorongan positif
+                        Positive push
                     </span>
                     <span className="inline-flex items-center gap-2">
                         <span className="inline-block w-6" style={{ borderTop: "3px dashed #44403c" }} />
-                        Dorongan negatif
+                        Negative push
                     </span>
                     <span className="inline-flex items-center gap-2">
                         <span className="inline-block h-3 w-3 rounded-full border border-stone-600 bg-stone-800" />
-                        Makin gelap, makin kuat
+                        Darker means stronger
                     </span>
                 </div>
 
@@ -323,14 +323,14 @@ export default function NetworkVisualizer({ data, result, onDone }) {
                         role="region"
                         tabIndex={0}
                         onScroll={hide}
-                        aria-label="Diagram jaringan saraf yang dapat digulir"
+                        aria-label="Scrollable neural network diagram"
                         className="overflow-x-auto rounded-md border border-stone-300 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-700"
                     >
                         <svg
                             viewBox={`0 0 ${WIDTH} ${height}`}
                             role="group"
                             onClick={hide}
-                            aria-label={`Diagram jaringan saraf dengan ${layers.length} lapisan. Penjelasan langkah ada di teks di bawah diagram.`}
+                            aria-label={`Neural network diagram with ${layers.length} layers. The step-by-step explanation is in the text below the diagram.`}
                             className="w-full min-w-[720px]"
                             xmlns="http://www.w3.org/2000/svg"
                             fontFamily="system-ui, sans-serif"
@@ -338,8 +338,8 @@ export default function NetworkVisualizer({ data, result, onDone }) {
                             {layers.map((layer, l) => {
                                 const units = layer.values.length;
                                 const name = ACTIVATION_NAMES[layer.activation] ?? layer.activation;
-                                let subtitle = l === 0 ? `${units} fitur` : `${units} neuron, ${name}`;
-                                if (layer.shown.length < units) subtitle += `, ${layer.shown.length} ditampilkan`;
+                                let subtitle = l === 0 ? `${units} features` : `${units} neurons, ${name}`;
+                                if (layer.shown.length < units) subtitle += `, ${layer.shown.length} shown`;
 
                                 return (
                                     <g key={`title-${l}`}>
@@ -488,7 +488,7 @@ export default function NetworkVisualizer({ data, result, onDone }) {
 
                             {tip.top && (
                                 <div className="mt-2 border-t border-stone-200 pt-2">
-                                    <p className="font-medium text-stone-900">Masukan terkuat</p>
+                                    <p className="font-medium text-stone-900">Strongest inputs</p>
                                     <ul className="mt-1 space-y-1">
                                         {tip.top.map((t) => (
                                             <li key={t.key}>
@@ -505,7 +505,7 @@ export default function NetworkVisualizer({ data, result, onDone }) {
 
                 {truncated && (
                     <p className="mt-2 text-sm text-stone-600">
-                        Lapisan dengan neuron lebih dari {MAX_NODES} hanya menampilkan {MAX_NODES} neuron dengan nilai terbesar. Perhitungan tetap memakai semua neuron.
+                        Layers with more than {MAX_NODES} neurons only show the {MAX_NODES} neurons with the largest values. The calculation still uses all neurons.
                     </p>
                 )}
 
@@ -522,7 +522,7 @@ export default function NetworkVisualizer({ data, result, onDone }) {
 
                 <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                     <button type="button" onClick={togglePlay} className={btnPrimary}>
-                        {finished ? "Ulangi" : playing ? "Jeda" : "Putar"}
+                        {finished ? "Replay" : playing ? "Pause" : "Play"}
                     </button>
 
                     <button
@@ -534,7 +534,7 @@ export default function NetworkVisualizer({ data, result, onDone }) {
                         }}
                         className={btn}
                     >
-                        Langkah
+                        Step
                     </button>
 
                     <button
@@ -546,12 +546,12 @@ export default function NetworkVisualizer({ data, result, onDone }) {
                         }}
                         className={btn}
                     >
-                        Lewati
+                        Skip
                     </button>
 
                     <div
                         role="group"
-                        aria-label="Kecepatan animasi"
+                        aria-label="Animation speed"
                         className="inline-flex overflow-hidden rounded-md border border-stone-500 bg-white"
                     >
                         {SPEEDS.map((s) => (
@@ -574,7 +574,7 @@ export default function NetworkVisualizer({ data, result, onDone }) {
                     </div>
 
                     <p className="text-sm tabular-nums text-stone-600 sm:ml-auto">
-                        Langkah {step} dari {total}
+                        Step {step} of {total}
                     </p>
                 </div>
             </div>
