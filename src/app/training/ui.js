@@ -1,3 +1,5 @@
+import { describeLayers } from "@/utils/architecture";
+
 export const DEFAULT_CONFIG = {
     epochs: 100,
     inputShape: 1,
@@ -5,9 +7,13 @@ export const DEFAULT_CONFIG = {
     optimizer: "adam",
     learningRate: 0.001,
     batchSize: 32,
+    seed: "",
+    earlyStopping: false,
+    layers: [
+        { units: 16, activation: "relu" },
+        { units: 8, activation: "relu" },
+    ],
 };
-
-export const HIDDEN_UNITS = [16, 8];
 
 export const LOSS_OPTIONS = [
     ["meanSquaredError", "Mean Squared Error (MSE)"],
@@ -35,6 +41,32 @@ export const OPTIMIZER_OPTIONS = [
 
 export const LOSS_LABELS = Object.fromEntries(LOSS_OPTIONS);
 export const OPTIMIZER_LABELS = Object.fromEntries(OPTIMIZER_OPTIONS);
+export const PRESETS = [
+    { id: "quick", label: "Quick", note: "30 epochs. A fast first check.", values: { epochs: 30, learningRate: 0.01, batchSize: 32 } },
+    { id: "balanced", label: "Balanced", note: "100 epochs. A good default.", values: { epochs: 100, learningRate: 0.005, batchSize: 32 } },
+    { id: "thorough", label: "Thorough", note: "300 epochs with small batches. Slower.", values: { epochs: 300, learningRate: 0.001, batchSize: 16 } },
+];
+
+export const GLOSSARY = {
+    epochs:
+        "One epoch means the model has looked at every training row once. More epochs give it more chances to learn, but too many can make it memorize the data instead of learning the pattern.",
+    learningRate:
+        "How big a step the model takes each time it corrects itself. Too high and it overshoots and becomes unstable. Too low and it learns very slowly.",
+    batchSize:
+        "How many rows the model looks at before it adjusts itself. Small batches adjust more often but more noisily. Large batches are smoother but react more slowly.",
+    loss:
+        "The score the model tries to push down, a measure of how wrong its predictions are. Use a regression loss when the target is a number, and a crossentropy loss when the target is a category.",
+    optimizer:
+        "The method used to adjust the model after each batch. Adam is a safe choice for most datasets.",
+    seed:
+        "A number that fixes the random choices: which rows go to training, validation, and test, and the starting weights. The same seed and settings give the same result, which makes comparisons fair. Leave it empty for a different split every run.",
+    earlyStopping:
+        "Stops training once the validation loss has not improved for 10 epochs in a row. It saves time and reduces overfitting. It needs validation data, so it does nothing on datasets under 10 rows.",
+    inputShape:
+        "The number of numbers the network receives per row. It is calculated for you from the columns you keep, including one-hot columns.",
+    architecture:
+        "Hidden layers sit between the input and the output. More layers and neurons can learn more complex patterns, but they need more data and are easier to overfit.",
+};
 
 const MULTICLASS_LOSSES = new Set([
     "categoricalCrossentropy",
@@ -54,9 +86,8 @@ export function outputUnits(loss, meta) {
 
 export function architectureSummary({ config, meta }) {
     const out = outputUnits(config.loss, meta);
-    return `Input ${config.inputShape}, Dense ${HIDDEN_UNITS.join(", Dense ")} (ReLU), Output ${out}`;
+    return `Input ${config.inputShape}, ${describeLayers(config.layers)}, Output ${out}`;
 }
-
 
 export const focusRing =
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-700 " +
@@ -82,7 +113,8 @@ export const btnSecondary =
 
 export const btnText =
     "inline-flex h-10 items-center rounded-md px-1 text-sm font-medium text-stone-900 underline " +
-    "underline-offset-4 transition-colors hover:text-orange-800 motion-reduce:transition-none " +
+    "underline-offset-4 transition-colors hover:text-orange-800 disabled:cursor-not-allowed " +
+    "disabled:text-stone-400 motion-reduce:transition-none " +
     focusRing;
 
 export const sectionHeading =

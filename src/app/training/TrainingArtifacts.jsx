@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { downloadBundle } from "@/utils/modelBundle";
 import { downloadReport, printReport } from "@/utils/report";
 import { downloadCode, generateNodeCode, generatePythonCode } from "@/utils/convert";
+import { storageSet } from "@/utils/storage";
 import SourceCodePanel from "./SourceCodePanel";
-import { btnSecondary, btnText, focusRing, sectionHeading } from "./ui";
+import { btnPrimary, btnSecondary, btnText, focusRing, sectionHeading } from "./ui";
 
 function Row({ title, detail, children }) {
     return (
@@ -21,7 +23,9 @@ function Row({ title, detail, children }) {
 }
 
 export default function TrainingArtifacts({ run, bundle }) {
+    const router = useRouter();
     const [error, setError] = useState("");
+    const [opening, setOpening] = useState(false);
 
     const attempt = (fn) => () => {
         try {
@@ -32,6 +36,18 @@ export default function TrainingArtifacts({ run, bundle }) {
         }
     };
 
+    async function handleTestNow() {
+        setError("");
+        setOpening(true);
+        try {
+            await storageSet("handoff", bundle);
+            router.push("/test?from=training");
+        } catch {
+            setOpening(false);
+            setError("The model could not be handed over to the test page. Download the model and load it there instead.");
+        }
+    }
+
     return (
         <section aria-labelledby="artifacts-title">
             <h2 id="artifacts-title" className={sectionHeading}>
@@ -39,13 +55,32 @@ export default function TrainingArtifacts({ run, bundle }) {
             </h2>
 
             <ul className="divide-y divide-stone-200">
-                <Row title="Trained model" detail="JSON bundle with weights and preprocessing statistics.">
-                    <button type="button" onClick={attempt(() => downloadBundle(bundle))} className={btnSecondary}>
-                        Download model
-                    </button>
-                    <Link href="/test" className={btnText}>
-                        Open test page
-                    </Link>
+                {bundle ? (
+                    <Row title="Try the model" detail="Open the test page with this model already loaded. Nothing to upload.">
+                        <button type="button" onClick={handleTestNow} disabled={opening} className={btnPrimary}>
+                            {opening ? "Opening…" : "Test this model now"}
+                        </button>
+                    </Row>
+                ) : null}
+
+                <Row
+                    title="Trained model"
+                    detail={
+                        bundle
+                            ? "JSON bundle with weights and preprocessing statistics."
+                            : "The weights of this run are no longer stored, because of the history limit or cleared browser data. Train again to get them."
+                    }
+                >
+                    {bundle && (
+                        <>
+                            <button type="button" onClick={attempt(() => downloadBundle(bundle))} className={btnSecondary}>
+                                Download model
+                            </button>
+                            <Link href="/test" className={btnText}>
+                                Open test page
+                            </Link>
+                        </>
+                    )}
                 </Row>
 
                 <Row title="Source code" detail="Training script equivalent to this configuration.">

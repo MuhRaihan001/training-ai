@@ -1,11 +1,12 @@
 "use client";
 
 import { useMemo } from "react";
-import { analyzeHistory, accuracyOf } from "@/utils/insight";
+import { analyzeHistory } from "@/utils/insight";
 import TrainingMetrics from "./TrainingMetrics";
 import TrainingHistoryChart, { hasMetric } from "./TrainingHistoryChart";
 import TrainingInsight from "./TrainingInsight";
 import TrainingEvaluation from "./TrainingEvaluation";
+import FeatureImportance from "./FeatureImportance";
 import EpochDetails from "./EpochDetails";
 import TrainingArtifacts from "./TrainingArtifacts";
 import {
@@ -17,9 +18,23 @@ import {
     sectionHeading,
 } from "./ui";
 
-export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
+const STOP_TEXT = {
+    user: "Stopped by you",
+    "early-stopping": "Stopped by early stopping",
+};
+
+export default function TrainingResults({
+    run,
+    bundle,
+    canTrainAgain,
+    runCount,
+    onTrainAgain,
+    onApplyPatch,
+    onCompare,
+    onBack,
+}) {
     const { config, dataset, history, meta } = run;
-    const analysis = useMemo(() => analyzeHistory(history), [history]);
+    const analysis = useMemo(() => analyzeHistory(history, config), [history, config]);
 
     const metricKind = hasMetric(history, "accuracy") ? "accuracy" : hasMetric(history, "mae") ? "mae" : null;
     const metricTitle = metricKind === "accuracy" ? "Accuracy" : "Mean absolute error (MAE)";
@@ -35,6 +50,8 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
               .join(" / ")
         : null;
 
+    const seedText = config.seed === "" || config.seed === null || config.seed === undefined ? null : String(config.seed);
+
     const summary = [
         ["Dataset", `${dataset.fileName} (${dataset.rows} rows)`],
         ["Architecture", architectureSummary({ config, meta })],
@@ -44,6 +61,7 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
         ],
         ["Epochs completed", `${history.length} of ${config.epochs}`],
         ...(splitText ? [["Data split", splitText]] : []),
+        ["Seed", seedText ?? "Random"],
     ];
 
     return (
@@ -52,7 +70,7 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex flex-wrap items-center gap-3">
                         <h2 id="results-title" className="text-lg font-semibold text-stone-900">
-                            Training Results
+                            {run.label ? `${run.label}: Training Results` : "Training Results"}
                         </h2>
                         <span className="inline-flex items-center gap-1.5 rounded-full border border-green-300 bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-900">
                             <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" className="h-3 w-3">
@@ -60,16 +78,32 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
                             </svg>
                             Completed
                         </span>
+                        {run.stoppedBy && (
+                            <span className="inline-flex items-center rounded-full border border-stone-300 bg-stone-100 px-2.5 py-0.5 text-xs font-medium text-stone-800">
+                                {STOP_TEXT[run.stoppedBy]}
+                            </span>
+                        )}
                     </div>
                     <div className="flex flex-col gap-2 sm:flex-row">
-                        <button type="button" onClick={onTrainAgain} className={btnPrimary}>
+                        <button type="button" onClick={onTrainAgain} disabled={!canTrainAgain} className={btnPrimary}>
                             Train Again
                         </button>
+                        {runCount > 1 && (
+                            <button type="button" onClick={onCompare} className={btnSecondary}>
+                                Compare runs ({runCount})
+                            </button>
+                        )}
                         <button type="button" onClick={onBack} className={btnSecondary}>
                             Back to Configuration
                         </button>
                     </div>
                 </div>
+
+                {!canTrainAgain && (
+                    <p className="mt-2 text-xs text-stone-500">
+                        Load the same dataset file on the configuration page to train again with these settings.
+                    </p>
+                )}
 
                 <p role="status" className="sr-only">
                     Training completed after {history.length} epochs.
@@ -109,12 +143,19 @@ export default function TrainingResults({ run, bundle, onTrainAgain, onBack }) {
                         )}
                     </div>
                     <div className="min-w-0">
-                        <TrainingInsight run={run} analysis={analysis} />
+                        <TrainingInsight
+                            run={run}
+                            analysis={analysis}
+                            canApply={canTrainAgain}
+                            onApply={onApplyPatch}
+                        />
                     </div>
                 </div>
             </section>
 
             <TrainingEvaluation run={run} />
+
+            <FeatureImportance importance={run.importance} />
 
             <EpochDetails history={history} />
 

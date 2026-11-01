@@ -51,7 +51,7 @@ function parseCsv(text, delimiter) {
     }
 
     if (inQuotes) {
-        throw new Error("Tanda kutip pada file tidak tertutup.");
+        throw new Error("A quotation mark in the file is never closed.");
     }
 
     if (field !== "" || row.length > 0) {
@@ -68,19 +68,19 @@ export function parseDataset(file, rawText) {
     const table = parseCsv(text, delimiter);
 
     if (table.length === 0) {
-        throw new Error("File kosong. Pastikan file berisi header dan minimal satu baris data.");
+        throw new Error("The file is empty. It needs a header row and at least one data row.");
     }
 
     const [headers, ...rows] = table;
 
     if (rows.length === 0) {
-        throw new Error("File hanya berisi header. Tambahkan minimal satu baris data.");
+        throw new Error("The file only contains a header. Add at least one data row.");
     }
 
     const badIndex = rows.findIndex((r) => r.length !== headers.length);
     if (badIndex !== -1) {
         throw new Error(
-            `Baris data ke-${badIndex + 1} memiliki ${rows[badIndex].length} kolom, seharusnya ${headers.length}.`
+            `Data row ${badIndex + 1} has ${rows[badIndex].length} columns, but the header has ${headers.length}.`
         );
     }
 
@@ -88,7 +88,7 @@ export function parseDataset(file, rawText) {
         fileName: file.name,
         fileSize: file.size,
         delimiter,
-        headers: headers.map((h, i) => h.trim() || `kolom ${i + 1}`),
+        headers: headers.map((h, i) => h.trim() || `column ${i + 1}`),
         rows,
     };
 }

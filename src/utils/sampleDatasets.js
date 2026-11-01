@@ -32,15 +32,35 @@ export const SAMPLE_DATASETS = [
         id: "graduation",
         name: "Student Graduation",
         kind: "Binary Classification",
-        description: "Predicts whether a student graduates based on study hours, attendance, and assignment scores. 200 rows.",
-        config: { inputShape: 3, loss: "binaryCrossentropy", epochs: 80, learningRate: 0.01 },
+        description:
+            "Predicts whether a student graduates based on study hours, attendance, and assignment scores. ",
+        config: { inputShape: 3, loss: "binaryCrossentropy", epochs: 120, learningRate: 0.01 },
         build() {
-            const r = rng(11), rows = [];
-            for (let i = 0; i < 200; i++) {
-                const studyHours = r() * 10, attendance = 50 + r() * 50, assignmentScore = 40 + r() * 60;
-                const z = (studyHours - 5) * 0.6 + (attendance - 75) * 0.06 + (assignmentScore - 70) * 0.05 + gauss(r) * 0.8;
-                rows.push([studyHours.toFixed(1), attendance.toFixed(0), assignmentScore.toFixed(0), z > 0 ? "pass" : "fail"]);
+            const MIN_ATTENDANCE = 80;
+            const r = rng(11);
+            const rows = [];
+
+            for (let i = 0; i < 500; i++) {
+                const studyHours = r() * 10;
+                const attendance = 65 + r() * 35;
+                const assignmentScore = 40 + r() * 60;
+
+                const z =
+                    (studyHours - 5) * 0.6 +
+                    (attendance - 90) * 0.06 +
+                    (assignmentScore - 70) * 0.05 +
+                    gauss(r) * 0.8;
+                const eligible = Math.round(attendance) >= MIN_ATTENDANCE;
+                const passed = eligible && z > 0;
+
+                rows.push([
+                    studyHours.toFixed(1),
+                    attendance.toFixed(0),
+                    assignmentScore.toFixed(0),
+                    passed ? "pass" : "fail",
+                ]);
             }
+
             return toCsv(["study_hours", "attendance_percent", "assignment_score", "status"], rows);
         },
     },

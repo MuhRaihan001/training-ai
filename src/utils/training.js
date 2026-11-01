@@ -1,6 +1,7 @@
 import * as tf from "@tensorflow/tfjs";
 import { analyzeColumns, buildFeatures, defaultPlan, toNumber } from "@/utils/preprocess";
 import { classificationMetrics, regressionMetrics, splitSizes } from "@/utils/evaluation";
+import { normalizeLayers, validateLayers } from "@/utils/architecture";
 
 const REGRESSION_LOSSES = new Set([
     "meanSquaredError",
@@ -23,7 +24,8 @@ const ACCURACY_LOSSES = new Set([
 ]);
 
 const MAX_CLASSES = 100;
-const DEFAULT_HIDDEN_UNITS = [16, 8];
+const MAX_IMPORTANCE_ROWS = 1000;
+export const EARLY_STOPPING_PATIENCE = 10;
 
 function disposeModel(model) {
     model?.optimizer?.dispose();
@@ -45,14 +47,31 @@ function createOptimizer(name, learningRate) {
         case "adadelta":
             return tf.train.adadelta(learningRate);
         default:
-            throw new Error(`Optimizer tidak dikenal: ${name}.`);
+            throw new Error(`Unknown optimizer: ${name}.`);
     }
 }
+function readSeed(config) {
+    if (config.seed === "" || config.seed === null || config.seed === undefined) return null;
+    const seed = Number(config.seed);
+    return Number.isInteger(seed) && seed >= 0 ? seed : null;
+}
 
-function shuffledIndices(length) {
+function createRandom(seed) {
+    if (seed === null) return Math.random;
+
+    let state = seed >>> 0;
+    return () => {
+        state = (state + 0x6d2b79f5) | 0;
+        let t = Math.imul(state ^ (state >>> 15), 1 | state);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+function shuffledIndices(length, random) {
     const order = Array.from({ length }, (_, i) => i);
     for (let i = length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor(random() * (i + 1));
         [order[i], order[j]] = [order[j], order[i]];
     }
     return order;
@@ -62,17 +81,23 @@ function validateConfig(config) {
     const { epochs, inputShape, batchSize, learningRate } = config;
 
     if (!Number.isInteger(epochs) || epochs < 1) {
-        throw new Error("Epoch harus berupa bilangan bulat minimal 1.");
+        throw new Error("Epochs must be a whole number of at least 1.");
     }
     if (!Number.isInteger(inputShape) || inputShape < 1) {
-        throw new Error("Input shape harus berupa bilangan bulat minimal 1.");
+        throw new Error("Input shape must be a whole number of at least 1.");
     }
     if (!Number.isInteger(batchSize) || batchSize < 1) {
-        throw new Error("Batch size harus berupa bilangan bulat minimal 1.");
+        throw new Error("Batch size must be a whole number of at least 1.");
     }
     if (!Number.isFinite(learningRate) || learningRate <= 0) {
-        throw new Error("Learning rate harus lebih besar dari 0.");
+        throw new Error("Learning rate must be greater than 0.");
     }
+    if (config.seed !== "" && config.seed !== null && config.seed !== undefined && readSeed(config) === null) {
+        throw new Error("Seed must be a whole number of 0 or more, or left empty.");
+    }
+
+    const layerError = validateLayers(normalizeLayers(config.layers));
+    if (layerError) throw new Error(layerError);
 }
 
 function encodeTargets(rawTargets, loss, targetName) {
@@ -80,7 +105,7 @@ function encodeTargets(rawTargets, loss, targetName) {
 
     if (loss === "cosineProximity") {
         throw new Error(
-            "Cosine Proximity membutuhkan target berdimensi lebih dari satu, sedangkan dataset ini hanya punya satu kolom target. Pilih loss lain."
+            "Cosine Proximity needs targets with more than one dimension, but this dataset has a single target column. Choose another loss."
         );
     }
 
@@ -89,7 +114,7 @@ function encodeTargets(rawTargets, loss, targetName) {
         const bad = values.findIndex((v) => !Number.isFinite(v));
         if (bad !== -1) {
             throw new Error(
-                `Kolom target "${targetName}" harus berupa angka untuk loss ${loss}, ditemukan "${rawTargets[bad]}".`
+                `The target column "${targetName}" must be numeric for ${loss}, but found "${rawTargets[bad]}".`
             );
         }
         return {
@@ -97,7 +122,7 @@ function encodeTargets(rawTargets, loss, targetName) {
             outputUnits: 1,
             outputActivation: loss === "poisson" ? "softplus" : "linear",
             classes: null,
-            values, // nilai aktual (untuk MAE / RMSE / R²)
+            values,
         };
     }
 
@@ -107,7 +132,7 @@ function encodeTargets(rawTargets, loss, targetName) {
 
     if (classes.length > MAX_CLASSES) {
         throw new Error(
-            `Kolom target "${targetName}" memiliki ${classes.length} nilai unik. Loss ${loss} dipakai untuk klasifikasi, sedangkan data ini tampak seperti regresi.`
+            `The target column "${targetName}" has ${classes.length} distinct values. ${loss} is a classification loss, but this data looks like regression.`
         );
     }
 
@@ -117,7 +142,7 @@ function encodeTargets(rawTargets, loss, targetName) {
     if (BINARY_LOSSES.has(loss)) {
         if (classes.length !== 2) {
             throw new Error(
-                `Loss ${loss} membutuhkan tepat 2 kelas pada kolom target "${targetName}", ditemukan ${classes.length}.`
+                `${loss} needs exactly 2 classes in the target column "${targetName}", but found ${classes.length}.`
             );
         }
         const isHinge = loss !== "binaryCrossentropy";
@@ -127,22 +152,20 @@ function encodeTargets(rawTargets, loss, targetName) {
             outputUnits: 1,
             outputActivation: isHinge ? "linear" : "sigmoid",
             classes,
-            labels, // indeks kelas asli (0 / 1), untuk confusion matrix
+            labels,
         };
     }
 
     if (MULTICLASS_LOSSES.has(loss)) {
         if (classes.length < 2) {
             throw new Error(
-                `Kolom target "${targetName}" hanya memiliki ${classes.length} kelas. Minimal 2 kelas dibutuhkan.`
+                `The target column "${targetName}" has only ${classes.length} class. At least 2 are needed.`
             );
         }
         const ys =
             loss === "sparseCategoricalCrossentropy"
                 ? tf.tensor2d(labels, [n, 1])
-                : tf.tidy(() =>
-                    tf.oneHot(tf.tensor1d(labels, "int32"), classes.length).toFloat()
-                );
+                : tf.tidy(() => tf.oneHot(tf.tensor1d(labels, "int32"), classes.length).toFloat());
         return {
             ys,
             outputUnits: classes.length,
@@ -152,32 +175,31 @@ function encodeTargets(rawTargets, loss, targetName) {
         };
     }
 
-    throw new Error(`Loss tidak didukung: ${loss}.`);
+    throw new Error(`Unsupported loss: ${loss}.`);
 }
 
-function prepareData(config, dataset, plan) {
+function prepareData(config, dataset, plan, random) {
     const { headers, rows } = dataset;
     const featureCount = headers.length - 1;
 
     if (featureCount < 1) {
-        throw new Error("Dataset membutuhkan minimal 2 kolom: satu fitur dan satu target.");
+        throw new Error("The dataset needs at least 2 columns: one feature and one target.");
     }
     if (rows.length < 2) {
-        throw new Error("Dataset membutuhkan minimal 2 baris data.");
+        throw new Error("The dataset needs at least 2 data rows.");
     }
 
-    // Tanpa plan eksplisit, pakai perlakuan otomatis (angka, teks -> one-hot/label, ID -> drop).
     const columnPlan = plan ?? defaultPlan(analyzeColumns(dataset));
     const built = buildFeatures(dataset, columnPlan);
 
     if (config.inputShape !== built.width) {
         throw new Error(
-            `Input shape (${config.inputShape}) harus sama dengan jumlah input model setelah encoding dan drop kolom (${built.width}).`
+            `Input shape (${config.inputShape}) must equal the number of model inputs after encoding and dropping columns (${built.width}).`
         );
     }
 
     const targetName = headers[featureCount];
-    const order = shuffledIndices(rows.length);
+    const order = shuffledIndices(rows.length, random);
     const features = order.map((i) => built.scaled[i]);
     const rawTargets = order.map((i) => String(rows[i][featureCount]).trim());
 
@@ -194,14 +216,17 @@ function prepareData(config, dataset, plan) {
     };
 }
 
-function buildModel(config, target, hiddenUnits) {
+function buildModel(config, target, layers, seed) {
     const model = tf.sequential();
+    const initializer = (offset) =>
+        seed === null ? undefined : tf.initializers.glorotUniform({ seed: seed + offset });
 
-    hiddenUnits.forEach((units, i) => {
+    layers.forEach(({ units, activation }, i) => {
         model.add(
             tf.layers.dense({
                 units,
-                activation: "relu",
+                activation,
+                kernelInitializer: initializer(i),
                 ...(i === 0 ? { inputShape: [config.inputShape] } : {}),
             })
         );
@@ -211,6 +236,7 @@ function buildModel(config, target, hiddenUnits) {
         tf.layers.dense({
             units: target.outputUnits,
             activation: target.outputActivation,
+            kernelInitializer: initializer(layers.length),
         })
     );
 
@@ -233,7 +259,18 @@ function argmax(values) {
     return best;
 }
 
-// Evaluasi satu bagian data (train / validation / test) dengan model yang sudah selesai dilatih.
+function toLabels(predicted, target, config, count) {
+    if (target.outputUnits > 1) {
+        const units = target.outputUnits;
+        return Array.from({ length: count }, (_, i) =>
+            argmax(predicted.slice(i * units, (i + 1) * units))
+        );
+    }
+
+    const threshold = config.loss === "hinge" || config.loss === "squaredHinge" ? 0 : 0.5;
+    return predicted.map((v) => (v >= threshold ? 1 : 0));
+}
+
 function evaluateSubset(model, config, target, x, y, start, count) {
     const result = model.evaluate(x, y, { batchSize: 256, verbose: 0 });
     const first = Array.isArray(result) ? result[0] : result;
@@ -250,35 +287,82 @@ function evaluateSubset(model, config, target, x, y, start, count) {
     }
 
     const trueLabels = target.labels.slice(start, start + count);
-    let predLabels;
-
-    if (target.outputUnits > 1) {
-        predLabels = trueLabels.map((_, i) =>
-            argmax(predicted.slice(i * target.outputUnits, (i + 1) * target.outputUnits))
-        );
-    } else {
-        const threshold = config.loss === "hinge" || config.loss === "squaredHinge" ? 0 : 0.5;
-        predLabels = predicted.map((v) => (v >= threshold ? 1 : 0));
-    }
+    const predLabels = toLabels(predicted, target, config, count);
 
     return { count, loss, ...classificationMetrics(trueLabels, predLabels, target.classes) };
 }
 
-// options.columns: array perlakuan kolom fitur ("numeric" | "label" | "onehot" | "drop").
+async function computeImportance(model, config, target, subset, basis, columns, random) {
+    const matrix = await subset.x.array();
+    const rows = matrix.slice(0, MAX_IMPORTANCE_ROWS);
+    const count = rows.length;
+    const classification = Boolean(target.classes);
+    const truth = classification
+        ? target.labels.slice(subset.start, subset.start + count)
+        : target.values.slice(subset.start, subset.start + count);
+
+    const score = (data) => {
+        const predicted = tf.tidy(() => Array.from(model.predict(tf.tensor2d(data)).dataSync()));
+
+        if (!classification) {
+            const sum = predicted.reduce((total, p, i) => total + (truth[i] - p) ** 2, 0);
+            return Math.sqrt(sum / count);
+        }
+
+        const labels = toLabels(predicted, target, config, count);
+        return labels.reduce((hits, label, i) => hits + (label === truth[i] ? 1 : 0), 0) / count;
+    };
+
+    const baseline = score(rows);
+    const repeats = columns.length > 20 ? 1 : 3;
+    const items = [];
+    let offset = 0;
+
+    for (const column of columns) {
+        const width = column.mode === "onehot" ? column.categories.length : 1;
+        const from = offset;
+        offset += width;
+
+        let total = 0;
+        for (let r = 0; r < repeats; r++) {
+            const order = shuffledIndices(count, random);
+            const permuted = rows.map((row, i) => {
+                const copy = row.slice();
+                const source = rows[order[i]];
+                for (let c = from; c < from + width; c++) copy[c] = source[c];
+                return copy;
+            });
+            total += score(permuted);
+        }
+
+        const average = total / repeats;
+        const value = classification ? baseline - average : (average - baseline) / (baseline || 1);
+
+        items.push({ name: column.name, value });
+        await tf.nextFrame();
+    }
+
+    items.sort((a, b) => b.value - a.value);
+
+    return { basis, metric: classification ? "accuracy" : "rmse", baseline, items };
+}
+
 export async function trainModel(config, dataset, options = {}) {
-    const { hiddenUnits = DEFAULT_HIDDEN_UNITS, onEpochEnd, save, columns } = options;
+    const { onEpochEnd, shouldStop, save, columns } = options;
 
     validateConfig(config);
     if (!dataset) {
-        throw new Error("Training membutuhkan dataset CSV.");
+        throw new Error("Training needs a CSV dataset.");
     }
 
+    const seed = readSeed(config);
+    const random = createRandom(seed);
+    const layers = normalizeLayers(config.layers);
+
     const { xs, target, targetName, featureNames, featureStats, columns: usedColumns, dropped } =
-        prepareData(config, dataset, columns);
+        prepareData(config, dataset, columns, random);
     const { ys } = target;
 
-    // Data sudah diacak: bagian awal untuk training, lalu validation, dan terakhir test.
-    // Test set tidak pernah dipakai saat training maupun saat memilih epoch.
     const sizes = splitSizes(dataset.rows.length);
     const ranges = {
         train: [0, sizes.train],
@@ -297,25 +381,43 @@ export async function trainModel(config, dataset, options = {}) {
         }
     }
 
-    const validationSplit = sizes.plan.validation;
-    const testSplit = sizes.plan.test;
     const history = [];
     let model;
+    let stoppedBy = null;
 
     try {
-        model = buildModel(config, target, hiddenUnits);
+        model = buildModel(config, target, layers, seed);
+
+        let bestValLoss = Infinity;
+        let bestEpoch = 0;
 
         await model.fit(subsets.train.x, subsets.train.y, {
             epochs: config.epochs,
             batchSize: config.batchSize,
             validationData: subsets.validation ? [subsets.validation.x, subsets.validation.y] : undefined,
-            shuffle: true,
+            shuffle: seed === null,
             verbose: 0,
             callbacks: {
                 onEpochEnd: (epoch, logs) => {
                     const entry = { epoch: epoch + 1, ...logs };
                     history.push(entry);
                     onEpochEnd?.(entry);
+
+                    if (shouldStop?.()) {
+                        stoppedBy = "user";
+                        model.stopTraining = true;
+                        return;
+                    }
+
+                    if (config.earlyStopping && subsets.validation && Number.isFinite(logs.val_loss)) {
+                        if (logs.val_loss < bestValLoss) {
+                            bestValLoss = logs.val_loss;
+                            bestEpoch = epoch;
+                        } else if (epoch - bestEpoch >= EARLY_STOPPING_PATIENCE) {
+                            stoppedBy = "early-stopping";
+                            model.stopTraining = true;
+                        }
+                    }
                 },
             },
         });
@@ -323,7 +425,7 @@ export async function trainModel(config, dataset, options = {}) {
         const last = history[history.length - 1];
         if (!Number.isFinite(last?.loss)) {
             throw new Error(
-                "Loss menjadi NaN atau tak hingga. Turunkan learning rate atau periksa nilai ekstrem pada dataset."
+                "Loss became NaN or infinite. Lower the learning rate or check the dataset for extreme values."
             );
         }
 
@@ -345,19 +447,37 @@ export async function trainModel(config, dataset, options = {}) {
             );
         }
 
+        let importance = null;
+        try {
+            const basis = subsets.test ? "test" : subsets.validation ? "validation" : "train";
+            importance = await computeImportance(
+                model,
+                config,
+                target,
+                subsets[basis],
+                basis,
+                usedColumns,
+                random
+            );
+        } catch (error) {
+            console.warn("Feature importance skipped:", error);
+        }
+
         const meta = {
             loss: config.loss,
             optimizer: config.optimizer,
             rowCount: dataset.rows.length,
-            validationSplit,
-            testSplit,
+            validationSplit: sizes.plan.validation,
+            testSplit: sizes.plan.test,
             split: evaluation.split,
             targetName,
-            featureNames, // nama input model (setelah one-hot)
-            featureStats, // mean/std per input model
-            columns: usedColumns, // kolom yang dipertahankan + cara encoding
-            dropped, // nama kolom yang dibuang
+            featureNames,
+            featureStats,
+            columns: usedColumns,
+            dropped,
             classes: target.classes,
+            layers,
+            seed,
         };
 
         model.setUserDefinedMetadata(meta);
@@ -370,6 +490,8 @@ export async function trainModel(config, dataset, options = {}) {
             model,
             history,
             evaluation,
+            importance,
+            stoppedBy,
             dispose: () => disposeModel(model),
             meta,
         };

@@ -6,11 +6,18 @@ import { focusRing } from "./ui";
 const STAGES = [
     { id: "config", label: "Configuration" },
     { id: "results", label: "Results" },
+    { id: "experiments", label: "Experiments" },
 ];
 
-export default function TrainingHeader({ view, hasResults, onNavigate, headingRef }) {
-    const current = view === "results" ? "results" : "config";
+export default function TrainingHeader({ view, hasResults, runCount, onNavigate, headingRef }) {
+    const current = view === "results" ? "results" : view === "experiments" ? "experiments" : "config";
     const busy = view === "training";
+
+    const available = {
+        config: true,
+        results: hasResults,
+        experiments: runCount > 0,
+    };
 
     return (
         <header>
@@ -36,10 +43,10 @@ export default function TrainingHeader({ view, hasResults, onNavigate, headingRe
                 Configure, train, and evaluate a neural network on your own CSV data without writing code.
             </p>
 
-            <ol aria-label="Stages" className="mt-5 flex items-center gap-3 text-sm">
+            <ol aria-label="Stages" className="mt-5 flex flex-wrap items-center gap-3 text-sm">
                 {STAGES.map((stage, i) => {
                     const isCurrent = stage.id === current;
-                    const enabled = !busy && (stage.id === "config" || hasResults);
+                    const enabled = !busy && available[stage.id];
 
                     return (
                         <li key={stage.id} className="flex items-center gap-3">
@@ -55,6 +62,9 @@ export default function TrainingHeader({ view, hasResults, onNavigate, headingRe
                                     }
                                 >
                                     {i + 1}. {stage.label}
+                                    {stage.id === "experiments" && runCount > 0 && (
+                                        <span className="ml-1.5 font-mono text-xs tabular-nums">({runCount})</span>
+                                    )}
                                 </span>
                             ) : (
                                 <button
@@ -67,6 +77,9 @@ export default function TrainingHeader({ view, hasResults, onNavigate, headingRe
                                     }
                                 >
                                     {i + 1}. {stage.label}
+                                    {stage.id === "experiments" && runCount > 0 && (
+                                        <span className="ml-1.5 font-mono text-xs tabular-nums">({runCount})</span>
+                                    )}
                                 </button>
                             )}
                         </li>

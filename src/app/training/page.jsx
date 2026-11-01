@@ -1,18 +1,25 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { parseDataset } from "@/utils/csv";
 import { sampleToFile } from "@/utils/sampleDatasets";
 import { MAX_INPUTS, analyzeColumns, countInputs, defaultPlan } from "@/utils/preprocess";
+import { normalizeLayers, validateLayers } from "@/utils/architecture";
+import { detectTask, lossProblem } from "@/utils/target";
+import { analyzeQuality } from "@/utils/dataQuality";
+import { storageDelete, storageGet, storageSet } from "@/utils/storage";
 import TrainingHeader from "./TrainingHeader";
 import DatasetSection from "./DatasetSection";
 import ColumnsSection from "./ColumnsSection";
+import DataQuality from "./DataQuality";
 import ModelConfigurationForm from "./ModelConfigurationForm";
 import TrainingProgress from "./TrainingProgress";
 import TrainingResults from "./TrainingResults";
-import { DEFAULT_CONFIG, btnPrimary, btnSecondary, btnText } from "./ui";
+import RunComparison from "./RunComparison";
+import { DEFAULT_CONFIG, LOSS_LABELS, btnPrimary, btnSecondary, btnText } from "./ui";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
+const MAX_RUNS = 10;
 const sizeFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 
 function formatBytes(bytes) {
@@ -21,7 +28,7 @@ function formatBytes(bytes) {
     return `${sizeFormat.format(bytes / (1024 * 1024))} MB`;
 }
 
-function validate(cfg, dataset, fileError, reading, plan) {
+function validate(cfg, dataset, fileError, reading, plan, task) {
     if (reading) return [{ message: "Reading the dataset file…" }];
     if (fileError) {
         return [{ message: "The dataset file has a problem. Choose another CSV file or remove it." }];
@@ -55,6 +62,27 @@ function validate(cfg, dataset, fileError, reading, plan) {
         }
     }
 
+    const problem = lossProblem(task, cfg.loss);
+    if (problem) {
+        const fixable = task?.loss && task.loss !== cfg.loss;
+        issues.push({
+            message: `${LOSS_LABELS[cfg.loss] ?? cfg.loss}: ${problem}`,
+            fix: fixable
+                ? { label: `Use ${LOSS_LABELS[task.loss]}`, patch: { loss: task.loss } }
+                : undefined,
+        });
+    }
+
+    const layerError = validateLayers(normalizeLayers(cfg.layers));
+    if (layerError) issues.push({ message: layerError });
+
+    if (cfg.seed !== "" && cfg.seed !== null && cfg.seed !== undefined) {
+        const seed = Number(cfg.seed);
+        if (!Number.isInteger(seed) || seed < 0) {
+            issues.push({ message: "Seed must be a whole number of 0 or more, or empty." });
+        }
+    }
+
     if (!Number.isInteger(cfg.epochs) || cfg.epochs < 1) {
         issues.push({ message: "Epochs must be an integer of at least 1." });
     }
@@ -80,14 +108,33 @@ export default function TrainingPage() {
     const [view, setView] = useState("config");
     const [attempt, setAttempt] = useState(0);
     const [trainError, setTrainError] = useState("");
-    const [bundle, setBundle] = useState(null);
-    const [run, setRun] = useState(null);
+    const [liveHistory, setLiveHistory] = useState([]);
+    const [stopping, setStopping] = useState(false);
 
-    const [progress, setProgress] = useState(null);
+    const [runs, setRuns] = useState([]);
+    const [activeId, setActiveId] = useState(null);
+    const [bundle, setBundle] = useState(null);
+    const [runsLoaded, setRunsLoaded] = useState(false);
+    const [savedSession, setSavedSession] = useState(null);
 
     const busy = useRef(false);
+    const stopRequested = useRef(false);
+    const runsRef = useRef([]);
+    const openToken = useRef(0);
     const headingRef = useRef(null);
     const prevView = useRef(view);
+
+    const run = runs.find((item) => item.id === activeId) ?? null;
+    const task = useMemo(() => (dataset ? detectTask(dataset) : null), [dataset]);
+    const planReady = Boolean(dataset) && plan.length === dataset.columnInfo.length;
+    const quality = useMemo(
+        () => (dataset && plan.length === dataset.columnInfo.length ? analyzeQuality(dataset, task, plan) : null),
+        [dataset, task, plan]
+    );
+
+    useEffect(() => {
+        runsRef.current = runs;
+    }, [runs]);
 
     useEffect(() => {
         if (prevView.current === view) return;
@@ -96,15 +143,69 @@ export default function TrainingPage() {
         headingRef.current?.focus();
     }, [view]);
 
-    const issues = validate(config, dataset, fileError, reading, plan);
+    useEffect(() => {
+        let cancelled = false;
+
+        async function load() {
+            try {
+                const [session, savedRuns] = await Promise.all([storageGet("session"), storageGet("runs")]);
+                if (cancelled) return;
+                if (session) setSavedSession(session);
+                if (Array.isArray(savedRuns)) setRuns(savedRuns);
+            } catch {
+                
+            } finally {
+                if (!cancelled) setRunsLoaded(true);
+            }
+        }
+
+        load();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!runsLoaded) return;
+        storageSet("runs", runs).catch(() => {});
+    }, [runs, runsLoaded]);
+
+    // Autosave the working session shortly after any change.
+    useEffect(() => {
+        if (!dataset?.sourceText) return;
+        const timer = setTimeout(() => {
+            storageSet("session", {
+                fileName: dataset.fileName,
+                text: dataset.sourceText,
+                config,
+                plan,
+                savedAt: Date.now(),
+            }).catch(() => {});
+        }, 600);
+        return () => clearTimeout(timer);
+    }, [dataset, config, plan]);
+
+    const issues = validate(config, dataset, fileError, reading, plan, task);
     const training = view === "training";
 
+    const canTrainAgain = Boolean(
+        run && dataset && dataset.fileName === run.dataset.fileName && plan.length === dataset.columnInfo.length
+    );
+
     function handleChange(event) {
-        const { name, value } = event.target;
-        setConfig((prev) => ({
-            ...prev,
-            [name]: name === "loss" || name === "optimizer" ? value : Number(value),
-        }));
+        const { name, value, type, checked } = event.target;
+        let next;
+
+        if (type === "checkbox") next = checked;
+        else if (name === "loss" || name === "optimizer") next = value;
+        else if (name === "seed") next = value === "" ? "" : Number(value);
+        else next = Number(value);
+
+        setConfig((prev) => ({ ...prev, [name]: next }));
+    }
+
+    function patchConfig(patch) {
+        setConfig((prev) => ({ ...prev, ...patch }));
     }
 
     function applyPlan(nextPlan, infos = dataset?.columnInfo) {
@@ -129,7 +230,7 @@ export default function TrainingPage() {
         setPlan([]);
         setFileError("");
         setBundle(null);
-        setRun(null);
+        setActiveId(null);
         setView("config");
 
         if (!file) {
@@ -159,8 +260,14 @@ export default function TrainingPage() {
             if (currentRead !== readId.current) return;
 
             const columnInfo = analyzeColumns(parsed);
-            setDataset({ ...parsed, file, columnInfo });
+            setDataset({ ...parsed, file, columnInfo, sourceText: text });
             applyPlan(defaultPlan(columnInfo), columnInfo);
+
+            // If the current loss cannot train on this target, switch to the recommended one.
+            const detected = detectTask(parsed);
+            if (detected?.loss) {
+                setConfig((prev) => (lossProblem(detected, prev.loss) ? { ...prev, loss: detected.loss } : prev));
+            }
         } catch (err) {
             if (currentRead !== readId.current) return;
             setFileError(err.message || "The file could not be read.");
@@ -183,8 +290,9 @@ export default function TrainingPage() {
         setReading(false);
         setInputKey((key) => key + 1);
         setBundle(null);
-        setRun(null);
+        setActiveId(null);
         setView("config");
+        storageDelete("session").catch(() => {});
     }
 
     function handleReset() {
@@ -192,17 +300,36 @@ export default function TrainingPage() {
         setConfig(DEFAULT_CONFIG);
     }
 
+    async function handleResume() {
+        const session = savedSession;
+        if (!session) return;
+
+        setSavedSession(null);
+        const file = new File([session.text], session.fileName, { type: "text/csv" });
+        await processFile(file);
+
+        setConfig({ ...DEFAULT_CONFIG, ...session.config });
+        setPlan((prev) => (prev.length === session.plan.length ? session.plan : prev));
+    }
+
+    function handleDiscardSession() {
+        setSavedSession(null);
+        storageDelete("session").catch(() => {});
+    }
+
     async function startTraining(cfg = config, columns = plan) {
         if (busy.current) return;
-        if (validate(cfg, dataset, fileError, reading, columns).length > 0) {
+        if (validate(cfg, dataset, fileError, reading, columns, task).length > 0) {
             setView("config");
             return;
         }
 
         busy.current = true;
+        stopRequested.current = false;
+        setStopping(false);
         setBundle(null);
-        setRun(null);
-        setProgress(null);
+        setActiveId(null);
+        setLiveHistory([]);
         setTrainError("");
         setAttempt((a) => a + 1);
         setView("training");
@@ -220,15 +347,22 @@ export default function TrainingPage() {
 
             result = await trainModel(cfg, dataset, {
                 columns,
-                onEpochEnd: (entry) =>
-                    setProgress({ epoch: entry.epoch, loss: entry.loss, valLoss: entry.val_loss }),
+                onEpochEnd: (entry) => setLiveHistory((prev) => [...prev, entry]),
+                shouldStop: () => stopRequested.current,
             });
 
             const newBundle = await createBundle(result.model, result.meta);
 
-            setBundle(newBundle);
-            setRun({
-                config: { ...cfg },
+            const current = runsRef.current;
+            const number = current.reduce((max, item) => Math.max(max, item.number), 0) + 1;
+            const id = `run-${Date.now()}`;
+
+            const newRun = {
+                id,
+                number,
+                label: `Run ${number}`,
+                createdAt: Date.now(),
+                config: { ...cfg, layers: normalizeLayers(cfg.layers) },
                 plan: [...columns],
                 dataset: {
                     fileName: dataset.fileName,
@@ -237,10 +371,21 @@ export default function TrainingPage() {
                     delimiter: dataset.delimiter,
                 },
                 history: result.history,
-                evaluation: result.evaluation,   
+                evaluation: result.evaluation,
+                importance: result.importance,
+                stoppedBy: result.stoppedBy,
                 meta: newBundle.meta,
                 durationMs: performance.now() - startedAt,
-            });
+            };
+
+            const next = [newRun, ...current];
+            const kept = next.slice(0, MAX_RUNS);
+            next.slice(MAX_RUNS).forEach((old) => storageDelete(`bundle:${old.id}`).catch(() => {}));
+            storageSet(`bundle:${id}`, newBundle).catch(() => {});
+
+            setRuns(kept);
+            setActiveId(id);
+            setBundle(newBundle);
             setView("results");
         } catch (err) {
             setTrainError(err.message || "Training failed.");
@@ -256,17 +401,74 @@ export default function TrainingPage() {
         startTraining();
     }
 
+    function handleStop() {
+        stopRequested.current = true;
+        setStopping(true);
+    }
+
     function handleTrainAgain() {
-        if (!run) return;
+        if (!run || !canTrainAgain) return;
         setConfig(run.config);
         setPlan(run.plan);
         startTraining(run.config, run.plan);
     }
 
+    // An insight action: train again with a few settings changed.
+    function handleApplyPatch(patch) {
+        if (!run || !canTrainAgain) return;
+        const next = { ...run.config, ...patch };
+        setConfig(next);
+        setPlan(run.plan);
+        startTraining(next, run.plan);
+    }
+
+    function handleRetryLowerRate() {
+        const next = { ...config, learningRate: Number((config.learningRate / 10).toPrecision(2)) };
+        setConfig(next);
+        startTraining(next);
+    }
+
+    async function handleOpenRun(id) {
+        const token = ++openToken.current;
+        setActiveId(id);
+        setBundle(null);
+        setView("results");
+
+        try {
+            const stored = await storageGet(`bundle:${id}`);
+            if (token === openToken.current) setBundle(stored ?? null);
+        } catch {
+            if (token === openToken.current) setBundle(null);
+        }
+    }
+
+    function handleDeleteRun(id) {
+        setRuns((prev) => prev.filter((item) => item.id !== id));
+        storageDelete(`bundle:${id}`).catch(() => {});
+        if (id === activeId) {
+            setActiveId(null);
+            setBundle(null);
+        }
+    }
+
+    function handleClearRuns() {
+        runsRef.current.forEach((item) => storageDelete(`bundle:${item.id}`).catch(() => {}));
+        setRuns([]);
+        setActiveId(null);
+        setBundle(null);
+    }
+
     function handleNavigate(stage) {
         if (training) return;
-        if (stage === "results" && !run) return;
-        setView(stage === "results" ? "results" : "config");
+        if (stage === "results") {
+            if (run) setView("results");
+            return;
+        }
+        if (stage === "experiments") {
+            if (runs.length > 0) setView("experiments");
+            return;
+        }
+        setView("config");
     }
 
     return (
@@ -275,89 +477,121 @@ export default function TrainingPage() {
                 <TrainingHeader
                     view={view}
                     hasResults={Boolean(run)}
+                    runCount={runs.length}
                     onNavigate={handleNavigate}
                     headingRef={headingRef}
                 />
 
                 {view === "config" && (
-                    <form onSubmit={handleSubmit} className="mt-10">
-                        <ConfigSection
-                            id="group-dataset"
-                            title="Dataset"
-                            description="Upload a CSV file. Feature columns come first and the last column is the target."
-                        >
-                            <DatasetSection
-                                dataset={dataset}
-                                fileError={fileError}
-                                reading={reading}
-                                inputKey={inputKey}
-                                onFile={processFile}
-                                onClear={handleClearFile}
-                                onSample={handleSample}
-                            />
-                        </ConfigSection>
-
-                        {dataset && plan.length === dataset.columnInfo.length && (
-                            <ConfigSection
-                                id="group-columns"
-                                title="Columns"
-                                description="Convert text to numbers and drop columns you do not need."
+                    <>
+                        {savedSession && !dataset && (
+                            <div
+                                role="region"
+                                aria-label="Previous session"
+                                className="mt-8 flex flex-col gap-3 rounded-md border border-stone-300 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
                             >
-                                <ColumnsSection
-                                    dataset={dataset}
-                                    plan={plan}
-                                    onChange={handlePlanChange}
-                                    onAuto={handleAutoPlan}
-                                />
-                            </ConfigSection>
+                                <p className="text-sm text-stone-800">
+                                    Continue your last session with{" "}
+                                    <span className="font-mono">{savedSession.fileName}</span>?
+                                </p>
+                                <div className="flex items-center gap-2">
+                                    <button type="button" onClick={handleResume} className={btnPrimary}>
+                                        Resume
+                                    </button>
+                                    <button type="button" onClick={handleDiscardSession} className={btnText}>
+                                        Discard
+                                    </button>
+                                </div>
+                            </div>
                         )}
 
-                        <ConfigSection
-                            id="group-model"
-                            title="Model configuration"
-                            description="Training parameters for the neural network."
-                        >
-                            <ModelConfigurationForm
-                                config={config}
-                                onChange={handleChange}
-                                featureCount={
-                                    dataset && plan.length === dataset.columnInfo.length
-                                        ? countInputs(dataset.columnInfo, plan)
-                                        : null
-                                }
-                            />
-                        </ConfigSection>
+                        <form onSubmit={handleSubmit} className="mt-10">
+                            <ConfigSection
+                                id="group-dataset"
+                                title="Dataset"
+                                description="Upload a CSV file. Feature columns come first and the last column is the target."
+                            >
+                                <DatasetSection
+                                    dataset={dataset}
+                                    fileError={fileError}
+                                    reading={reading}
+                                    inputKey={inputKey}
+                                    onFile={processFile}
+                                    onClear={handleClearFile}
+                                    onSample={handleSample}
+                                />
+                            </ConfigSection>
 
-                        <div className="border-t border-stone-200 pt-6">
-                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                                <button type="submit" disabled={issues.length > 0 || training} className={btnPrimary}>
-                                    Start Training
-                                </button>
-                                <button type="button" onClick={handleReset} className={btnSecondary}>
-                                    Reset
-                                </button>
-                            </div>
-
-                            {issues.length > 0 && (
-                                <ul role="status" className="mt-4 space-y-1 text-sm text-stone-600">
-                                    {issues.map((issue) => (
-                                        <li key={issue.message}>
-                                            {issue.message}
-                                            {issue.fix && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setConfig((prev) => ({ ...prev, ...issue.fix.patch }))}
-                                                    className={btnText + " ml-2 h-auto"}
-                                                >
-                                                    {issue.fix.label}
-                                                </button>
-                                            )}
-                                        </li>
-                                    ))}
-                                </ul>
+                            {planReady && (
+                                <ConfigSection
+                                    id="group-columns"
+                                    title="Columns"
+                                    description="Convert text to numbers and drop columns you do not need."
+                                >
+                                    <ColumnsSection
+                                        dataset={dataset}
+                                        plan={plan}
+                                        onChange={handlePlanChange}
+                                        onAuto={handleAutoPlan}
+                                    />
+                                </ConfigSection>
                             )}
-                        </div>
-                    </form>
+
+                            {quality && (
+                                <ConfigSection
+                                    id="group-quality"
+                                    title="Data check"
+                                    description="Quick checks that can explain odd results later."
+                                >
+                                    <DataQuality quality={quality} />
+                                </ConfigSection>
+                            )}
+
+                            <ConfigSection
+                                id="group-model"
+                                title="Model configuration"
+                                description="Training parameters and network shape."
+                            >
+                                <ModelConfigurationForm
+                                    config={config}
+                                    onChange={handleChange}
+                                    onPatch={patchConfig}
+                                    featureCount={planReady ? countInputs(dataset.columnInfo, plan) : null}
+                                    task={task}
+                                />
+                            </ConfigSection>
+
+                            <div className="border-t border-stone-200 pt-6">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                                    <button type="submit" disabled={issues.length > 0 || training} className={btnPrimary}>
+                                        Start Training
+                                    </button>
+                                    <button type="button" onClick={handleReset} className={btnSecondary}>
+                                        Reset
+                                    </button>
+                                </div>
+
+                                {issues.length > 0 && (
+                                    <ul role="status" className="mt-4 space-y-1 text-sm text-stone-600">
+                                        {issues.map((issue) => (
+                                            <li key={issue.message}>
+                                                {issue.message}
+                                                {issue.fix && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => patchConfig(issue.fix.patch)}
+                                                        className={btnText + " ml-2 h-auto"}
+                                                    >
+                                                        {issue.fix.label}
+                                                    </button>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        </form>
+                    </>
                 )}
 
                 {(view === "training" || view === "failed") && (
@@ -366,18 +600,36 @@ export default function TrainingPage() {
                         state={view === "training" ? "running" : "failed"}
                         error={trainError}
                         config={config}
-                        progress={progress}
+                        history={liveHistory}
+                        stopping={stopping}
                         dataset={{ fileName: dataset?.fileName ?? "", rows: dataset?.rows ?? [] }}
+                        onStop={handleStop}
                         onRetry={() => startTraining()}
+                        onRetryLowerRate={handleRetryLowerRate}
                         onBack={() => setView("config")}
                     />
                 )}
 
-                {view === "results" && run && bundle && (
+                {view === "results" && run && (
                     <TrainingResults
                         run={run}
                         bundle={bundle}
+                        canTrainAgain={canTrainAgain}
+                        runCount={runs.length}
                         onTrainAgain={handleTrainAgain}
+                        onApplyPatch={handleApplyPatch}
+                        onCompare={() => setView("experiments")}
+                        onBack={() => setView("config")}
+                    />
+                )}
+
+                {view === "experiments" && (
+                    <RunComparison
+                        runs={runs}
+                        activeId={activeId}
+                        onOpen={handleOpenRun}
+                        onDelete={handleDeleteRun}
+                        onClear={handleClearRuns}
                         onBack={() => setView("config")}
                     />
                 )}
