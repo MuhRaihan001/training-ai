@@ -43,6 +43,10 @@ export default function TrainingHeader({ view, hasResults, runCount, onNavigate,
                 Configure, train, and evaluate a neural network on your own CSV data without writing code.
             </p>
 
+            <Link href="/training/image" className={"mt-2 inline-block text-sm font-medium underline underline-offset-4 hover:text-orange-800 " + focusRing}>
+                Train on images instead
+            </Link>
+
             <ol aria-label="Stages" className="mt-5 flex flex-wrap items-center gap-3 text-sm">
                 {STAGES.map((stage, i) => {
                     const isCurrent = stage.id === current;

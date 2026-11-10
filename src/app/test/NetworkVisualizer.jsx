@@ -47,7 +47,6 @@ function shorten(text, max) {
     return value.length > max ? value.slice(0, max - 1) + "…" : value;
 }
 
-// If there are too many neurons, show only the ones with the largest values.
 function pickIndices(values, max) {
     const all = values.map((_, i) => i);
     if (all.length <= max) return all;
@@ -68,15 +67,11 @@ function buildView(data) {
         const shown = pickIndices(layer.values, MAX_NODES);
         const peak = Math.max(...layer.values.map(Math.abs)) || 1;
         const title =
-            l === 0
-                ? "Input layer"
-                : l === count - 1
-                    ? "Output layer"
-                    : `Hidden layer ${l}`;
+            layer.title ??
+            (l === 0 ? "Input layer" : l === count - 1 ? "Output layer" : `Hidden layer ${l}`);
         return { ...layer, shown, peak, title };
     });
 
-    // Step order: neuron by neuron, layer by layer (excluding the input layer).
     const steps = [];
     const offsets = [];
     layers.forEach((layer, l) => {
@@ -131,7 +126,6 @@ export default function NetworkVisualizer({ data, result, onDone }) {
             ? outputLayer.values.indexOf(Math.max(...outputLayer.values))
             : 0;
 
-    // Neuron tooltip: positioned relative to the diagram box, clamped so it doesn't overflow the edges.
     function show(l, pos, el) {
         const box = boxRef.current;
         if (!box) return;
@@ -162,11 +156,13 @@ export default function NetworkVisualizer({ data, result, onDone }) {
         if (l === 0) {
             return {
                 title: layer.labels[index],
-                subtitle: `${layer.title}, feature ${index + 1}`,
-                rows: [
-                    ["Original value", number.format(layer.raw[index])],
-                    ["After standardization", number.format(layer.values[index])],
-                ],
+                subtitle: `${layer.title}, ${data.image ? "value" : "feature"} ${index + 1}`,
+                rows: data.image
+                    ? [["Activation", number.format(layer.values[index])]]
+                    : [
+                          ["Original value", number.format(layer.raw[index])],
+                          ["After standardization", number.format(layer.values[index])],
+                      ],
                 top: null,
             };
         }
@@ -204,7 +200,6 @@ export default function NetworkVisualizer({ data, result, onDone }) {
 
     const tip = hover ? describeNeuron(hover.l, hover.pos) : null;
 
-    // Edges between neurons: the one being computed (or hovered) is drawn last (on top).
     const edges = [];
     for (let l = 1; l < layers.length; l++) {
         const prev = layers[l - 1];
@@ -253,11 +248,11 @@ export default function NetworkVisualizer({ data, result, onDone }) {
         return { stroke: "#d6d3d1", strokeWidth: 0.8, strokeOpacity: 0.5 };
     }
 
-    // Explanation text for the current step.
     let narration;
     if (step === 0) {
-        narration =
-            "The feature values have been standardized and fed into the input layer. Press Play or Step to start the calculation.";
+        narration = data.image
+            ? "The image was resized and passed through the convolution layers, which turned it into feature values. The diagram shows the strongest ones. Press Play or Step to follow how the final decision is made."
+            : "The feature values have been standardized and fed into the input layer. Press Play or Step to start the calculation.";
     } else if (finished) {
         if (outputLayer.values.length > 1) {
             narration = `All layers have been calculated. The output neuron "${data.outputLabels[winner]}" has the highest value (${valueText(outputLayer, outputLayer.values[winner])}), so the model's decision is ${result?.label ?? data.outputLabels[winner]}.`;
@@ -338,7 +333,8 @@ export default function NetworkVisualizer({ data, result, onDone }) {
                             {layers.map((layer, l) => {
                                 const units = layer.values.length;
                                 const name = ACTIVATION_NAMES[layer.activation] ?? layer.activation;
-                                let subtitle = l === 0 ? `${units} features` : `${units} neurons, ${name}`;
+                                let subtitle =
+                                    layer.subtitle ?? (l === 0 ? `${units} features` : `${units} neurons, ${name}`);
                                 if (layer.shown.length < units) subtitle += `, ${layer.shown.length} shown`;
 
                                 return (

@@ -27,12 +27,12 @@ const MAX_CLASSES = 100;
 const MAX_IMPORTANCE_ROWS = 1000;
 export const EARLY_STOPPING_PATIENCE = 10;
 
-function disposeModel(model) {
+export function disposeModel(model) {
     model?.optimizer?.dispose();
     model?.dispose();
 }
 
-function createOptimizer(name, learningRate) {
+export function createOptimizer(name, learningRate) {
     switch (name) {
         case "sgd":
             return tf.train.sgd(learningRate);

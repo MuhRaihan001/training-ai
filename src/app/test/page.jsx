@@ -310,6 +310,10 @@ export default function TestModelPage() {
                     >
                         Back to training
                     </Link>
+
+                    <Link href="/test/image" className="mt-3 ml-4 inline-block text-sm font-medium underline underline-offset-4 hover:text-orange-800">
+                        Test an image model
+                    </Link>
                 </header>
 
                 <section aria-labelledby="group-load" className="mt-10">

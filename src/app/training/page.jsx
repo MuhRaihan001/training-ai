@@ -170,7 +170,6 @@ export default function TrainingPage() {
         storageSet("runs", runs).catch(() => {});
     }, [runs, runsLoaded]);
 
-    // Autosave the working session shortly after any change.
     useEffect(() => {
         if (!dataset?.sourceText) return;
         const timer = setTimeout(() => {
@@ -263,7 +262,6 @@ export default function TrainingPage() {
             setDataset({ ...parsed, file, columnInfo, sourceText: text });
             applyPlan(defaultPlan(columnInfo), columnInfo);
 
-            // If the current loss cannot train on this target, switch to the recommended one.
             const detected = detectTask(parsed);
             if (detected?.loss) {
                 setConfig((prev) => (lossProblem(detected, prev.loss) ? { ...prev, loss: detected.loss } : prev));
@@ -413,7 +411,6 @@ export default function TrainingPage() {
         startTraining(run.config, run.plan);
     }
 
-    // An insight action: train again with a few settings changed.
     function handleApplyPatch(patch) {
         if (!run || !canTrainAgain) return;
         const next = { ...run.config, ...patch };

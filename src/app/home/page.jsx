@@ -8,6 +8,7 @@ const APP_NAME = "Neural Network Playground";
 const NAV_LINKS = [
     { href: "#about", label: "About Us"  },
     { href: "/training", label: "Training" },
+    { href: "/training/image", label: "Image Training" },
     { href: "/test", label: "Run Model" },
 ];
 
@@ -98,7 +99,6 @@ function RibbonBackground() {
         let strandCount = 0;
         let strandStyles = [];
 
-        // Warna dihitung sekali per jumlah garis, bukan tiap frame.
         function buildStyles(count) {
             strandCount = count;
             strandStyles = RIBBONS.map((ribbon) =>

@@ -62,8 +62,6 @@ const ACTIVATIONS = {
     },
 };
 
-// rawInputs: one value per kept column (meta.columns).
-// Text is converted to numbers (one-hot / label) with the same rules as training.
 function prepareInputs(meta, rawInputs) {
     const { columns, featureStats } = normalizeMeta(meta);
     const { mean, std } = featureStats;
@@ -93,7 +91,6 @@ export function downloadBundle(bundle) {
     setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-// Loads a bundle object (for example one handed over from the training page).
 export async function loadBundleObject(bundle) {
     if (!bundle?.artifacts?.modelTopology || !bundle?.artifacts?.weightData || !bundle?.meta) {
         throw new Error("This is not a model bundle produced by the training page.");
@@ -106,7 +103,6 @@ export async function loadBundleObject(bundle) {
         tf.io.fromMemory({ ...rest, weightData: base64ToArrayBuffer(weightData) })
     );
 
-    // normalizeMeta keeps older bundles (without encoding info) loadable.
     return { model, meta: normalizeMeta(bundle.meta) };
 }
 
@@ -121,7 +117,6 @@ export async function loadBundle(text) {
     return loadBundleObject(bundle);
 }
 
-// Turns raw network output into a label / value the UI can show.
 export function interpretOutput(meta, values) {
     if (!meta.classes) return { value: values[0] };
 
@@ -160,7 +155,6 @@ export async function predict(model, meta, rawInputs) {
     return interpretOutput(meta, values);
 }
 
-// Returns one result per row: a prediction or { error }.
 export async function predictBatch(model, meta, table) {
     const tf = await import("@tensorflow/tfjs");
     const { columns, featureStats } = normalizeMeta(meta);
@@ -214,15 +208,10 @@ export async function predictBatch(model, meta, table) {
     return { results, failed: results.filter((result) => result.error).length };
 }
 
-export function traceForward(model, meta, rawInputs) {
-    const { numbers, scaled } = prepareInputs(meta, rawInputs);
-
-    const layers = [
-        { kind: "input", values: scaled, raw: numbers, labels: meta.featureNames },
-    ];
-
-    const denseLayers = model.layers.filter((layer) => layer.getWeights().length === 2);
-    let current = scaled;
+export function traceDense(model, input) {
+    const denseLayers = model.layers.filter((layer) => layer.getClassName() === "Dense");
+    const layers = [];
+    let current = input;
 
     denseLayers.forEach((layer, index) => {
         const [kernel, bias] = layer.getWeights();
@@ -247,11 +236,23 @@ export function traceForward(model, meta, rawInputs) {
         current = values;
     });
 
+    return { layers, output: current };
+}
+
+export function traceForward(model, meta, rawInputs) {
+    const { numbers, scaled } = prepareInputs(meta, rawInputs);
+    const { layers: dense, output } = traceDense(model, scaled);
+
+    const layers = [
+        { kind: "input", values: scaled, raw: numbers, labels: meta.featureNames },
+        ...dense,
+    ];
+
     const isHinge = meta.loss === "hinge" || meta.loss === "squaredHinge";
     let outputLabels;
-    if (meta.classes && meta.classes.length === current.length) {
+    if (meta.classes && meta.classes.length === output.length) {
         outputLabels = meta.classes;
-    } else if (meta.classes && current.length === 1) {
+    } else if (meta.classes && output.length === 1) {
         outputLabels = [`${isHinge ? "Score" : "P"}(${meta.classes[1]})`];
     } else {
         outputLabels = [meta.targetName];

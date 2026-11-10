@@ -69,7 +69,6 @@ export function regressionMetrics(actual, predicted) {
     const ssRes = residuals.reduce((s, r) => s + r * r, 0);
     const ssTot = actual.reduce((s, v) => s + (v - mean) ** 2, 0);
 
-    // Batasi titik grafik agar SVG tetap ringan; metrik tetap dihitung dari semua data.
     const step = Math.max(1, Math.ceil(n / MAX_PLOT_POINTS));
     const points = [];
     for (let i = 0; i < n; i += step) {

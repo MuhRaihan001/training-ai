@@ -1,5 +1,3 @@
-// src/utils/convert.js
-
 import { splitPlan } from "@/utils/evaluation";
 
 const HIDDEN_UNITS = [16, 8];
@@ -21,7 +19,7 @@ const LOSSES = {
     kullbackLeiblerDivergence: { kind: "multiclass", keras: "kl_divergence", accuracy: true, encoding: "onehot" },
 };
 
-const PY_OPTIMIZERS = {
+export const PY_OPTIMIZERS = {
     sgd: (lr) => `keras.optimizers.SGD(learning_rate=${lr})`,
     momentum: (lr) => `keras.optimizers.SGD(learning_rate=${lr}, momentum=${MOMENTUM})`,
     rmsprop: (lr) => `keras.optimizers.RMSprop(learning_rate=${lr})`,
@@ -30,7 +28,7 @@ const PY_OPTIMIZERS = {
     adadelta: (lr) => `keras.optimizers.Adadelta(learning_rate=${lr})`,
 };
 
-const JS_OPTIMIZERS = {
+export const JS_OPTIMIZERS = {
     sgd: (lr) => `tf.train.sgd(${lr})`,
     momentum: (lr) => `tf.train.momentum(${lr}, ${MOMENTUM})`,
     rmsprop: (lr) => `tf.train.rmsprop(${lr})`,
@@ -39,8 +37,6 @@ const JS_OPTIMIZERS = {
     adadelta: (lr) => `tf.train.adadelta(${lr})`,
 };
 
-// Daftar kolom fitur yang dipertahankan beserta cara encoding-nya.
-// Bundle lama (tanpa meta.columns) dianggap seluruhnya numerik.
 function resolveColumns(dataset, meta) {
     if (Array.isArray(meta?.columns)) {
         return {
@@ -82,8 +78,6 @@ function resolve(config, dataset = {}, meta = {}) {
 
     const { columns, dropped } = resolveColumns(dataset, meta);
 
-    // Proporsi pembagian data sama dengan yang dipakai halaman training.
-    // Bundle lama hanya punya validationSplit, jadi test set dianggap tidak ada.
     const plan = splitPlan(rowCount);
     const hasSavedSplit = meta?.validationSplit !== undefined;
 
@@ -99,11 +93,9 @@ function resolve(config, dataset = {}, meta = {}) {
     };
 }
 
-// Satu objek per baris, JSON valid sekaligus literal Python/JavaScript yang valid.
 const literalList = (items) =>
     "[\n" + items.map((item) => "    " + JSON.stringify(item)).join(",\n") + "\n]";
 
-/* ------------------------------ Python ------------------------------ */
 
 function pythonTarget(info, loss) {
     if (info.kind === "regression") {
@@ -165,7 +157,8 @@ function pythonLabels(info) {
     };
 }
 
-function pythonEvaluate(info) {
+// Exported so convertImage.js can reuse it.
+export function pythonEvaluate(info) {
     if (info.kind === "regression") {
         return String.raw`def evaluate(name, X_part, y_part):
     loss = model.evaluate(X_part, y_part, verbose=0)
@@ -387,10 +380,7 @@ print("Prediction example (first row):", model.predict(X[:1], verbose=0))
 `;
 }
 
-/* ------------------------------ Node.js ------------------------------ */
-
-// Fungsi evaluate() untuk kode Node.js: metrik yang sama dengan halaman training.
-function nodeEvaluate(info) {
+export function nodeEvaluate(info) {
     const common = String.raw`function readLoss(result) {
     const first = Array.isArray(result) ? result[0] : result;
     const value = first.dataSync()[0];

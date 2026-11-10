@@ -27,6 +27,9 @@ const LANGUAGES = [
     },
 ];
 
+const DEFAULT_DESCRIPTION =
+    "Training code equivalent to the configuration above. Put the CSV file in the same folder as the script before running it.";
+
 const tabBase =
     "inline-flex h-11 items-center gap-2 rounded-md border px-4 text-sm font-medium " +
     "transition-colors motion-reduce:transition-none focus-visible:outline-none " +
@@ -57,23 +60,23 @@ function DownloadIcon() {
     );
 }
 
-export default function SourceCodePanel({ run }) {
+export default function SourceCodePanel({ run, generators, description }) {
     const [active, setActive] = useState("python");
     const [copied, setCopied] = useState(false);
     const timer = useRef(null);
 
-    // Kode dibuat dari `run`, jadi sesuai parameter saat training
     const sources = useMemo(() => {
         const result = {};
         for (const lang of LANGUAGES) {
             try {
-                result[lang.id] = { code: lang.generate(run) };
+                const generate = generators?.[lang.id] ?? lang.generate;
+                result[lang.id] = { code: generate(run) };
             } catch (err) {
-                result[lang.id] = { error: err.message || "Source code tidak dapat dibuat." };
+                result[lang.id] = { error: err.message || "The source code could not be generated." };
             }
         }
         return result;
-    }, [run]);
+    }, [run, generators]);
 
     useEffect(() => () => clearTimeout(timer.current), []);
 
@@ -112,14 +115,11 @@ export default function SourceCodePanel({ run }) {
             >
                 Source Code
             </h2>
-            <p className="mt-4 text-sm text-stone-600">
-                Kode training yang setara dengan konfigurasi di atas. Letakkan file CSV
-                satu folder dengan skrip sebelum dijalankan.
-            </p>
+            <p className="mt-4 text-sm text-stone-600">{description ?? DEFAULT_DESCRIPTION}</p>
 
             <div
                 role="tablist"
-                aria-label="Bahasa pemrograman"
+                aria-label="Programming language"
                 onKeyDown={handleKeyDown}
                 className="mt-4 flex flex-wrap gap-2"
             >
@@ -165,20 +165,20 @@ export default function SourceCodePanel({ run }) {
                     </div>
                     {current.code && (
                         <span className="shrink-0 font-mono text-xs tabular-nums text-stone-400">
-                            {lineCount} baris
+                            {lineCount} lines
                         </span>
                     )}
                 </div>
 
                 {current.error ? (
                     <p role="alert" className="bg-red-50 px-4 py-3 text-sm text-red-800">
-                        <span className="font-semibold">Tidak dapat dibuat: </span>
+                        <span className="font-semibold">Could not be generated: </span>
                         {current.error}
                     </p>
                 ) : (
                     <pre
                         tabIndex={0}
-                        aria-label={`Pratinjau kode ${lang.label}`}
+                        aria-label={`${lang.label} code preview`}
                         className="max-h-96 overflow-auto bg-stone-900 p-4 font-mono text-xs leading-relaxed text-stone-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-orange-700"
                     >
                         <code>{current.code}</code>
@@ -204,11 +204,11 @@ export default function SourceCodePanel({ run }) {
                     className={actionClass}
                 >
                     <CopyIcon />
-                    {copied ? "Tersalin" : "Salin kode"}
+                    {copied ? "Copied" : "Copy code"}
                 </button>
 
                 <p role="status" className="sr-only">
-                    {copied ? "Kode berhasil disalin" : ""}
+                    {copied ? "Code copied to the clipboard" : ""}
                 </p>
 
                 <code className="font-mono text-sm text-stone-600 sm:ml-auto">

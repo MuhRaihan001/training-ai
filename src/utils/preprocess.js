@@ -185,11 +185,6 @@ export function buildFeatures(dataset, plan) {
     };
 }
 
-/* -------------------------------------------------------------------------- */
-/* Memakai ulang pra-pemrosesan saat prediksi                                  */
-/* -------------------------------------------------------------------------- */
-
-// Bundle lama (sebelum ada encoding) tidak punya meta.columns: anggap semua kolom numerik.
 export function normalizeMeta(meta) {
     if (Array.isArray(meta.columns)) return meta;
 
@@ -200,8 +195,6 @@ export function normalizeMeta(meta) {
     };
 }
 
-// rawInputs: satu nilai per kolom yang dipertahankan (teks dari form).
-// Hasil: vektor fitur mentah (sebelum standardisasi) sepanjang jumlah input model.
 export function encodeRow(columns, rawInputs) {
     const out = [];
 
