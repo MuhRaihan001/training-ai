@@ -257,6 +257,17 @@ export default function ImageTrainingPage() {
         }
     }
 
+    function saveBlob(name, blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
     async function handleDownload() {
         if (!modelRef.current) {
             setDownloadError("The model is no longer in memory. Train again to get it back.");
@@ -264,7 +275,38 @@ export default function ImageTrainingPage() {
         }
         try {
             setDownloadError("");
-            await modelRef.current.save("downloads://image-classifier");
+            const tf = await import("@tensorflow/tfjs");
+
+            let captured;
+            await modelRef.current.save(
+                tf.io.withSaveHandler(async (artifacts) => {
+                    captured = artifacts;
+                    return { modelArtifactsInfo: { dateSaved: new Date(), modelTopologyType: "JSON" } };
+                })
+            );
+
+            const weightData =
+                captured.weightData instanceof ArrayBuffer
+                    ? captured.weightData
+                    : tf.io.CompositeArrayBuffer.join(captured.weightData);
+
+            const json = {
+                modelTopology: captured.modelTopology,
+                format: captured.format,
+                generatedBy: captured.generatedBy,
+                convertedBy: captured.convertedBy,
+                weightsManifest: [
+                    {
+                        paths: ["./image-classifier.weights.bin"],
+                        weights: captured.weightSpecs,
+                    },
+                ],
+                userDefinedMetadata: captured.userDefinedMetadata,
+            };
+
+            saveBlob("image-classifier.json", new Blob([JSON.stringify(json)], { type: "application/json" }));
+            await new Promise((r) => setTimeout(r, 500));
+            saveBlob("image-classifier.weights.bin", new Blob([weightData], { type: "application/octet-stream" }));
         } catch (err) {
             setDownloadError(err.message || "The model could not be downloaded.");
         }
