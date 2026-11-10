@@ -1,9 +1,12 @@
 import { splitPlan } from "@/utils/model/evaluation";
+import { normalizeLayers } from "@/utils/model/architecture";
 
-const HIDDEN_UNITS = [16, 8];
 const MOMENTUM = 0.9;
-const SEED = 42;
-const MISSING_LABEL = "(kosong)"; // harus sama dengan preprocess.js
+const DEFAULT_SEED = 42;
+const PATIENCE = 10;
+
+const q = JSON.stringify;
+const naturalCompare = (a, b) => a.localeCompare(b, undefined, { numeric: true });
 
 const LOSSES = {
     meanSquaredError: { kind: "regression", keras: "mean_squared_error" },
@@ -37,21 +40,6 @@ export const JS_OPTIMIZERS = {
     adadelta: (lr) => `tf.train.adadelta(${lr})`,
 };
 
-function resolveColumns(dataset, meta) {
-    if (Array.isArray(meta?.columns)) {
-        return {
-            columns: meta.columns.map(({ index, name, mode }) => ({ index, name, mode })),
-            dropped: meta.dropped ?? [],
-        };
-    }
-
-    const headers = dataset.headers ?? [];
-    return {
-        columns: headers.slice(0, -1).map((name, index) => ({ index, name, mode: "numeric" })),
-        dropped: [],
-    };
-}
-
 function resolve(config, dataset = {}, meta = {}) {
     if (config.loss === "cosineProximity") {
         throw new Error(
@@ -61,103 +49,453 @@ function resolve(config, dataset = {}, meta = {}) {
 
     const info = LOSSES[config.loss];
     if (!info) throw new Error(`Unsupported loss function: ${config.loss}.`);
+    if (!PY_OPTIMIZERS[config.optimizer]) throw new Error(`Unknown optimizer: ${config.optimizer}.`);
 
-    if (!PY_OPTIMIZERS[config.optimizer]) {
-        throw new Error(`Unknown optimizer: ${config.optimizer}.`);
+    const headers = (dataset.headers ?? []).map((h) => String(h).trim());
+    const rowCount = Array.isArray(dataset.rows) ? dataset.rows.length : Number(dataset.rows) || 0;
+    const plan = splitPlan(rowCount);
+    const saved = meta?.validationSplit !== undefined;
+    const validationSplit = saved ? meta.validationSplit : plan.validation;
+    const testSplit = saved ? (meta.testSplit ?? 0) : plan.test;
+
+    let columns;
+    let dropped;
+    if (Array.isArray(meta?.columns)) {
+        columns = meta.columns.map(({ index, name, mode }) => ({ index, name, mode }));
+        dropped = meta.dropped ?? [];
+    } else {
+        columns = headers.slice(0, -1).map((name, index) => ({ index, name, mode: "numeric" }));
+        dropped = [];
     }
 
-    const rowCount = Array.isArray(dataset.rows)
-        ? dataset.rows.length
-        : Number(dataset.rows) || 0;
+    let classes = null;
+    if (info.kind !== "regression") {
+        if (Array.isArray(meta?.classes)) {
+            classes = meta.classes;
+        } else if (Array.isArray(dataset.rows) && headers.length > 0) {
+            const last = headers.length - 1;
+            classes = [...new Set(dataset.rows.map((row) => String(row[last]).trim()))].sort(naturalCompare);
+        }
+    }
 
     let activation = "linear";
-
     if (info.activation) activation = info.activation;
     else if (info.kind === "multiclass") activation = "softmax";
     else if (info.kind === "binary") activation = info.hinge ? "linear" : "sigmoid";
 
-    const { columns, dropped } = resolveColumns(dataset, meta);
-
-    const plan = splitPlan(rowCount);
-    const hasSavedSplit = meta?.validationSplit !== undefined;
+    const rawSeed = config.seed;
+    const seed =
+        rawSeed !== "" && rawSeed != null && Number.isInteger(Number(rawSeed)) && Number(rawSeed) >= 0
+            ? Number(rawSeed)
+            : DEFAULT_SEED;
 
     return {
         info,
         activation,
         columns,
         dropped,
+        classes,
+        seed,
+        validationSplit,
+        testSplit,
+        layers: normalizeLayers(config.layers),
+        earlyStopping: Boolean(config.earlyStopping) && validationSplit > 0,
+        evalSet: testSplit > 0 ? "test" : validationSplit > 0 ? "validation" : "train",
+        targetName: String(meta?.targetName ?? headers[headers.length - 1] ?? "target").trim(),
         fileName: dataset.fileName ?? "dataset.csv",
         delimiter: dataset.delimiter ?? ",",
-        validationSplit: hasSavedSplit ? meta.validationSplit : plan.validation,
-        testSplit: hasSavedSplit ? (meta.testSplit ?? 0) : plan.test,
+        metrics: LOSSES[config.loss].accuracy ? '["accuracy"]' : info.kind === "regression" ? '["mae"]' : "[]",
     };
 }
 
-const literalList = (items) =>
-    "[\n" + items.map((item) => "    " + JSON.stringify(item)).join(",\n") + "\n]";
+const modeNames = (r, mode) => r.columns.filter((c) => c.mode === mode).map((c) => c.name);
+const indent = (lines, pad = "    ") => lines.map((l) => (l ? pad + l : l));
 
+const PY_SET = { train: "tr", validation: "val", test: "te" };
 
-function pythonTarget(info, loss) {
+function pythonTarget(r) {
+    const { info, classes } = r;
+
     if (info.kind === "regression") {
-        return String.raw`y = to_number(df.iloc[:, -1]).to_numpy(dtype="float32").reshape(-1, 1)
-if np.isnan(y).any():
-    raise ValueError("The target column contains blank values")
-OUTPUT_UNITS = 1
-classes = None`;
+        return ['y = pd.to_numeric(y_raw.str.replace(",", ".", regex=False)).to_numpy("float32").reshape(-1, 1)'];
     }
 
-    const head = String.raw`raw_y = df.iloc[:, -1].astype(str).str.strip().tolist()
-classes = sorted(set(raw_y), key=natural_key)
-class_index = {c: i for i, c in enumerate(classes)}
-labels = np.array([class_index[v] for v in raw_y])`;
+    const lines = [classes ? `classes = ${q(classes)}` : "classes = sorted(y_raw.unique())"];
 
     if (info.kind === "binary") {
-        const values = info.hinge ? "labels * 2 - 1" : "labels";
+        lines.push(
+            `y = (y_raw == classes[1]).to_numpy("float32").reshape(-1, 1)${info.hinge ? " * 2 - 1" : ""}`
+        );
+    } else {
+        lines.push("labels = y_raw.map({c: i for i, c in enumerate(classes)}).to_numpy()");
+        lines.push(info.encoding === "sparse" ? "y = labels" : "y = keras.utils.to_categorical(labels, len(classes))");
+    }
 
-        return (
-            head +
-            "\n" +
-            String.raw`if len(classes) != 2:
-    raise ValueError(f"Loss ${loss} requires exactly 2 classes, but {len(classes)} were found")
-y = (${values}).astype("float32").reshape(-1, 1)
-OUTPUT_UNITS = 1`
+    return lines;
+}
+
+function pythonEval(r) {
+    const s = PY_SET[r.evalSet];
+    const { info } = r;
+    const head = `# Evaluasi pada data ${r.evalSet}`;
+
+    if (info.kind === "regression") {
+        return [
+            head,
+            `pred = model.predict(X_${s}, verbose=0).ravel()`,
+            `err = y_${s}.ravel() - pred`,
+            `print(f"${r.evalSet} MAE={np.abs(err).mean():.4f} RMSE={np.sqrt((err ** 2).mean()):.4f}")`,
+        ];
+    }
+
+    if (info.kind === "binary") {
+        return [
+            head,
+            `pred = (model.predict(X_${s}, verbose=0).ravel() >= ${info.hinge ? 0 : 0.5}).astype(int)`,
+            `actual = (y_${s}.ravel() > 0).astype(int)`,
+            `print(f"${r.evalSet} accuracy={(pred == actual).mean():.4f}")`,
+        ];
+    }
+
+    return [
+        head,
+        `pred = model.predict(X_${s}, verbose=0).argmax(axis=1)`,
+        `actual = ${info.encoding === "sparse" ? `y_${s}` : `y_${s}.argmax(axis=1)`}`,
+        `print(f"${r.evalSet} accuracy={(pred == actual).mean():.4f}")`,
+    ];
+}
+
+export function generatePythonCode({ config, dataset, meta }) {
+    const r = resolve(config, dataset, meta);
+    const { info } = r;
+    const numeric = modeNames(r, "numeric");
+    const label = modeNames(r, "label");
+    const onehot = modeNames(r, "onehot");
+    const scale = [...numeric, ...label];
+    const text = [...label, ...onehot];
+
+    const L = [
+        "# Generated by Neural Network Playground",
+        "# pip install tensorflow pandas numpy",
+        "import json",
+        "import numpy as np",
+        "import pandas as pd",
+        "from tensorflow import keras",
+        "from tensorflow.keras import layers",
+        "",
+        `SEED = ${r.seed}`,
+        "keras.utils.set_random_seed(SEED)",
+        "",
+        "# 1. Baca data",
+        `df = pd.read_csv(${q(r.fileName)}, sep=${q(r.delimiter)}, dtype=str, keep_default_na=False, encoding="utf-8-sig")`,
+        "df.columns = df.columns.str.strip()",
+        'df = df[df.ne("").any(axis=1)]',
+        "",
+        "# 2. Buang kolom",
+        `TARGET = ${q(r.targetName)}`,
+        `DROP = ${q(r.dropped)}`,
+        "y_raw = df[TARGET].str.strip()",
+        "X = df.drop(columns=DROP + [TARGET])",
+        "",
+        "# 3. Proses fitur",
+    ];
+
+    if (numeric.length) {
+        L.push(
+            `NUMERIC = ${q(numeric)}`,
+            "for c in NUMERIC:",
+            '    x = pd.to_numeric(X[c].str.replace(",", ".", regex=False).replace("", np.nan))',
+            "    X[c] = x.fillna(x.mean())"
+        );
+    }
+    if (text.length) {
+        if (label.length) L.push(`LABEL = ${q(label)}`);
+        if (onehot.length) L.push(`ONEHOT = ${q(onehot)}`);
+        L.push(
+            `for c in ${[label.length && "LABEL", onehot.length && "ONEHOT"].filter(Boolean).join(" + ")}:`,
+            '    X[c] = X[c].str.strip().replace("", "(kosong)")'
+        );
+    }
+    if (label.length) {
+        L.push(
+            "categories = {c: sorted(X[c].unique()) for c in LABEL}",
+            "for c in LABEL:",
+            "    X[c] = X[c].map({v: i for i, v in enumerate(categories[c])}).astype(float)"
+        );
+    }
+    if (onehot.length) L.push('X = pd.get_dummies(X, columns=ONEHOT, dtype="float64")');
+    if (scale.length) {
+        L.push(
+            `SCALE = ${q(scale)}`,
+            "mean = X[SCALE].mean()",
+            "std = X[SCALE].std(ddof=0).replace(0, 1)",
+            "X[SCALE] = (X[SCALE] - mean) / std"
+        );
+    }
+    L.push("columns = list(X.columns)", 'X = X.to_numpy("float32")', "", "# 4. Target", ...pythonTarget(r), "");
+
+    const val = r.validationSplit;
+    const test = r.testSplit;
+    L.push(
+        "# 5. Acak dan bagi data",
+        "order = np.random.default_rng(SEED).permutation(len(X))",
+        "X, y = X[order], y[order]",
+        `n_val = ${val > 0 ? `max(1, int(len(X) * ${val} + 0.5))` : 0}`,
+        `n_test = ${test > 0 ? `max(1, int(len(X) * ${test} + 0.5))` : 0}`,
+        "n_train = len(X) - n_val - n_test",
+        "X_tr, y_tr = X[:n_train], y[:n_train]"
+    );
+    if (val > 0) L.push("X_val, y_val = X[n_train:n_train + n_val], y[n_train:n_train + n_val]");
+    if (test > 0) L.push("X_te, y_te = X[n_train + n_val:], y[n_train + n_val:]");
+
+    const out = info.kind === "multiclass" ? "len(classes)" : "1";
+    L.push(
+        "",
+        "# 6. Model",
+        "model = keras.Sequential([",
+        "    layers.Input(shape=(X.shape[1],)),",
+        ...r.layers.map((l) => `    layers.Dense(${l.units}, activation=${q(l.activation)}),`),
+        `    layers.Dense(${out}, activation=${q(r.activation)}),`,
+        "])",
+        "model.compile(",
+        `    optimizer=${PY_OPTIMIZERS[config.optimizer](config.learningRate)},`,
+        `    loss=${q(info.keras)},`,
+        `    metrics=${r.metrics},`,
+        ")",
+        "",
+        "# 7. Training",
+        "model.fit(",
+        `    X_tr, y_tr, epochs=${config.epochs}, batch_size=${config.batchSize},`,
+        ...(val > 0 ? ["    validation_data=(X_val, y_val),"] : []),
+        ...(r.earlyStopping
+            ? [`    callbacks=[keras.callbacks.EarlyStopping(monitor="val_loss", patience=${PATIENCE})],`]
+            : []),
+        "    verbose=2,",
+        ")",
+        "",
+        ...pythonEval(r),
+        "",
+        "# 8. Export",
+        'model.save("model.keras")',
+        'with open("preprocessing.json", "w", encoding="utf-8") as f:',
+        "    json.dump({",
+        '        "columns": columns,',
+        '        "dropped": DROP,',
+        '        "target": TARGET,',
+        ...(scale.length ? ['        "mean": mean.to_dict(),', '        "std": std.to_dict(),'] : []),
+        ...(label.length ? ['        "categories": categories,'] : []),
+        ...(info.kind !== "regression" ? ['        "classes": classes,'] : []),
+        "    }, f, indent=2, ensure_ascii=False)",
+        ""
+    );
+
+    return L.join("\n");
+}
+
+const NODE_SET = { train: "Tr", validation: "Val", test: "Te" };
+
+const NODE_HELPERS = {
+    mean: "const mean = (v) => v.reduce((a, b) => a + b, 0) / v.length;",
+    toNum: 'const toNum = (v) => (v === "" ? NaN : Number(v.replace(",", ".")));',
+    cats: 'const cats = (cells) => [...new Set(cells.map((c) => c || "(kosong)"))].sort();',
+    standardize: [
+        "function standardize(name, v, extra) {",
+        "    const m = mean(v);",
+        "    const s = Math.sqrt(mean(v.map((x) => (x - m) ** 2))) || 1;",
+        "    prep[name] = { mean: m, std: s, ...extra };",
+        "    return v.map((x) => (x - m) / s);",
+        "}",
+    ].join("\n"),
+    numeric: [
+        "function numeric(name, cells) {",
+        "    const v = cells.map(toNum);",
+        "    const m = mean(v.filter(Number.isFinite));",
+        "    return standardize(name, v.map((x) => (Number.isFinite(x) ? x : m)));",
+        "}",
+    ].join("\n"),
+    label: [
+        "function label(name, cells) {",
+        "    const c = cats(cells);",
+        '    return standardize(name, cells.map((x) => c.indexOf(x || "(kosong)")), { categories: c });',
+        "}",
+    ].join("\n"),
+    onehot: [
+        "function onehot(name, cells) {",
+        "    const c = cats(cells);",
+        "    prep[name] = { categories: c };",
+        '    return c.map((k) => cells.map((x) => ((x || "(kosong)") === k ? 1 : 0)));',
+        "}",
+    ].join("\n"),
+};
+
+function nodeTarget(r) {
+    const { info, classes } = r;
+
+    if (info.kind === "regression") {
+        return ["const y = tf.tensor2d(target.map(toNum), [n, 1]);"];
+    }
+
+    const lines = [classes ? `const classes = ${q(classes)};` : "const classes = [...new Set(target)].sort();"];
+
+    if (info.kind === "binary") {
+        lines.push(
+            `const y = tf.tensor2d(target.map((v) => (v === classes[1] ? 1 : ${info.hinge ? -1 : 0})), [n, 1]);`
+        );
+    } else if (info.encoding === "sparse") {
+        lines.push("const y = tf.tensor2d(target.map((v) => classes.indexOf(v)), [n, 1]);");
+    } else {
+        lines.push(
+            'const y = tf.oneHot(tf.tensor1d(target.map((v) => classes.indexOf(v)), "int32"), classes.length).toFloat();'
         );
     }
 
-    const y =
-        info.encoding === "sparse"
-            ? 'labels.astype("int32")'
-            : 'keras.utils.to_categorical(labels, num_classes=len(classes)).astype("float32")';
-
-    return (
-        head +
-        "\n" +
-        String.raw`if len(classes) < 2:
-    raise ValueError("The target column must contain at least 2 classes")
-y = ${y}
-OUTPUT_UNITS = len(classes)`
-    );
+    return lines;
 }
 
-// Ekspresi label aktual / prediksi untuk klasifikasi, mengikuti cara aplikasi menghitungnya.
-function pythonLabels(info) {
-    if (info.kind === "binary") {
-        const threshold = info.hinge ? "0" : "0.5";
-        return {
-            actual: info.hinge
-                ? "(y_part.reshape(-1) > 0).astype(int)"
-                : "y_part.reshape(-1).astype(int)",
-            predicted: `(probs.reshape(-1) >= ${threshold}).astype(int)`,
-        };
+function nodeEval(r) {
+    const s = NODE_SET[r.evalSet];
+    const { info } = r;
+    const head = `// Evaluasi pada data ${r.evalSet}`;
+    const accuracy = [
+        "const hit = pred.filter((p, i) => p === actual[i]).length;",
+        `console.log("${r.evalSet} accuracy", (hit / actual.length).toFixed(4));`,
+    ];
+
+    if (info.kind === "regression") {
+        return [
+            head,
+            `const pred = Array.from(model.predict(x${s}).dataSync());`,
+            `const actual = Array.from(y${s}.dataSync());`,
+            "const err = actual.map((a, i) => a - pred[i]);",
+            `console.log("${r.evalSet} MAE", mean(err.map(Math.abs)).toFixed(4), "RMSE", Math.sqrt(mean(err.map((e) => e * e))).toFixed(4));`,
+        ];
     }
 
-    return {
-        actual: info.encoding === "sparse" ? "y_part.reshape(-1).astype(int)" : "y_part.argmax(axis=1)",
-        predicted: "probs.argmax(axis=1)",
-    };
+    if (info.kind === "binary") {
+        return [
+            head,
+            `const pred = Array.from(model.predict(x${s}).dataSync()).map((v) => (v >= ${info.hinge ? 0 : 0.5} ? 1 : 0));`,
+            `const actual = Array.from(y${s}.dataSync()).map((v) => (v > 0 ? 1 : 0));`,
+            ...accuracy,
+        ];
+    }
+
+    return [
+        head,
+        `const pred = Array.from(model.predict(x${s}).argMax(-1).dataSync());`,
+        `const actual = Array.from(${info.encoding === "sparse" ? `y${s}.flatten()` : `y${s}.argMax(-1)`}.dataSync());`,
+        ...accuracy,
+    ];
 }
 
-// Exported so convertImage.js can reuse it.
+export function generateNodeCode({ config, dataset, meta }) {
+    const r = resolve(config, dataset, meta);
+    const { info } = r;
+    const modes = new Set(r.columns.map((c) => c.mode));
+    const regression = info.kind === "regression";
+
+    const helpers = [NODE_HELPERS.mean, "const prep = {};"];
+    if (modes.has("numeric") || regression) helpers.push(NODE_HELPERS.toNum);
+    if (modes.has("label") || modes.has("onehot")) helpers.push(NODE_HELPERS.cats);
+    if (modes.has("numeric") || modes.has("label")) helpers.push("", NODE_HELPERS.standardize);
+    for (const mode of ["numeric", "label", "onehot"]) {
+        if (modes.has(mode)) helpers.push("", NODE_HELPERS[mode]);
+    }
+
+    const val = r.validationSplit;
+    const test = r.testSplit;
+    const sets = [["Tr", "0", "nTrain", "nTrain"]];
+    if (val > 0) sets.push(["Val", "nTrain", "nVal"]);
+    if (test > 0) sets.push(["Te", val > 0 ? "nTrain + nVal" : "nTrain", "nTest"]);
+
+    const out = info.kind === "multiclass" ? "classes.length" : "1";
+
+    const body = [
+        "// 1. Baca data (diacak)",
+        String.raw`const text = fs.readFileSync(${q(r.fileName)}, "utf8").replace(/^\uFEFF/, "");`,
+        `const [header, ...data] = Papa.parse(text, { delimiter: ${q(r.delimiter)}, skipEmptyLines: true }).data;`,
+        "const rows = Array.from(tf.util.createShuffledIndices(data.length), (i) => data[i].map((c) => c.trim()));",
+        "const col = (i) => rows.map((row) => row[i]);",
+        "const n = rows.length;",
+        "",
+        "// 2. Fitur (kolom yang dibuang tidak ditulis di sini)",
+        ...(r.dropped.length ? [`// Dropped: ${q(r.dropped)}`] : []),
+        "const columns = [",
+        ...r.columns.map(
+            (c) => `    ${c.mode === "onehot" ? "..." : ""}${c.mode}(${q(c.name)}, col(${c.index})),`
+        ),
+        "];",
+        "const xs = tf.tensor2d(rows.map((_, i) => columns.map((c) => c[i])));",
+        "",
+        "// 3. Target",
+        "const target = col(header.length - 1);",
+        ...nodeTarget(r),
+        "",
+        "// 4. Bagi data",
+        `const nVal = ${val > 0 ? `Math.max(1, Math.round(n * ${val}))` : 0};`,
+        `const nTest = ${test > 0 ? `Math.max(1, Math.round(n * ${test}))` : 0};`,
+        "const nTrain = n - nVal - nTest;",
+        "const part = (t, start, count) => t.slice([start, 0], [count, -1]);",
+        ...sets.map(
+            ([name, start, count]) =>
+                `const [x${name}, y${name}] = [part(xs, ${start}, ${count}), part(${"y"}, ${start}, ${count})];`
+        ),
+        "",
+        "// 5. Model",
+        "const model = tf.sequential();",
+        ...r.layers.map(
+            (l, i) =>
+                `model.add(tf.layers.dense({ units: ${l.units}, activation: ${q(l.activation)}${i === 0 ? ", inputShape: [xs.shape[1]]" : ""} }));`
+        ),
+        `model.add(tf.layers.dense({ units: ${out}, activation: ${q(r.activation)} }));`,
+        "model.compile({",
+        `    optimizer: ${JS_OPTIMIZERS[config.optimizer](config.learningRate)},`,
+        `    loss: ${q(config.loss)},`,
+        `    metrics: ${r.metrics},`,
+        "});",
+        "",
+        "// 6. Training",
+        "await model.fit(xTr, yTr, {",
+        `    epochs: ${config.epochs},`,
+        `    batchSize: ${config.batchSize},`,
+        ...(val > 0 ? ["    validationData: [xVal, yVal],"] : []),
+        ...(r.earlyStopping
+            ? [`    callbacks: [tf.callbacks.earlyStopping({ monitor: "val_loss", patience: ${PATIENCE} })],`]
+            : []),
+        "    verbose: 1,",
+        "});",
+        "",
+        ...nodeEval(r),
+        "",
+        "// 7. Export",
+        'await model.save("file://./model-output");',
+        `fs.writeFileSync(`,
+        '    "./model-output/preprocessing.json",',
+        `    JSON.stringify({ target: ${q(r.targetName)}, dropped: ${q(r.dropped)}, ${regression ? "" : "classes, "}columns: prep }, null, 2)`,
+        ");",
+    ];
+
+    return [
+        "// Generated by Neural Network Playground",
+        "// npm install @tensorflow/tfjs-node papaparse",
+        'const fs = require("fs");',
+        'const Papa = require("papaparse");',
+        'const tf = require("@tensorflow/tfjs-node");',
+        "",
+        ...helpers,
+        "",
+        "async function main() {",
+        ...indent(body),
+        "}",
+        "",
+        "main().catch((err) => {",
+        "    console.error(err.message);",
+        "    process.exit(1);",
+        "});",
+        "",
+    ].join("\n");
+}
+
 export function pythonEvaluate(info) {
     if (info.kind === "regression") {
         return String.raw`def evaluate(name, X_part, y_part):
@@ -174,15 +512,26 @@ export function pythonEvaluate(info) {
           f"RMSE={np.sqrt(np.mean(residual ** 2)):.4f} R2={r2:.4f}")`;
     }
 
-    const labels = pythonLabels(info);
+    const actualExpr =
+        info.kind === "binary"
+            ? info.hinge
+                ? "(y_part.reshape(-1) > 0).astype(int)"
+                : "y_part.reshape(-1).astype(int)"
+            : info.encoding === "sparse"
+              ? "y_part.reshape(-1).astype(int)"
+              : "y_part.argmax(axis=1)";
+    const predictedExpr =
+        info.kind === "binary"
+            ? `(probs.reshape(-1) >= ${info.hinge ? "0" : "0.5"}).astype(int)`
+            : "probs.argmax(axis=1)";
 
     return String.raw`def evaluate(name, X_part, y_part):
     loss = model.evaluate(X_part, y_part, verbose=0)
     loss = loss[0] if isinstance(loss, (list, tuple)) else loss
     probs = model.predict(X_part, verbose=0)
 
-    actual = ${labels.actual}
-    predicted = ${labels.predicted}
+    actual = ${actualExpr}
+    predicted = ${predictedExpr}
 
     k = len(classes)
     matrix = np.zeros((k, k), dtype=int)  # rows = actual class, columns = predicted class
@@ -203,181 +552,6 @@ export function pythonEvaluate(info) {
     print(f"{'macro avg':<20}{precision.mean():>10.4f}{recall.mean():>10.4f}{f1.mean():>10.4f}{len(actual):>9d}")
     print("Confusion matrix (rows = actual, columns = predicted):")
     print(matrix)`;
-}
-
-export function generatePythonCode({ config, dataset, meta }) {
-    const r = resolve(config, dataset, meta);
-    const { info } = r;
-
-    const dense = HIDDEN_UNITS
-        .map((u) => `    layers.Dense(${u}, activation="relu"),`)
-        .join("\n");
-
-    const optimizer = PY_OPTIMIZERS[config.optimizer]("LEARNING_RATE");
-    const metrics = info.accuracy ? '["accuracy"]' : info.kind === "regression" ? '["mae"]' : "[]";
-
-    return String.raw`# Training code automatically generated from the training page configuration
-# Installation: pip install tensorflow pandas numpy
-
-import json
-import re
-
-import numpy as np
-import pandas as pd
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-
-CSV_PATH = ${JSON.stringify(r.fileName)}
-DELIMITER = ${JSON.stringify(r.delimiter)}
-INPUT_SHAPE = ${config.inputShape}
-EPOCHS = ${config.epochs}
-BATCH_SIZE = ${config.batchSize}
-LEARNING_RATE = ${config.learningRate}
-VALIDATION_SPLIT = ${r.validationSplit}
-TEST_SPLIT = ${r.testSplit}
-SEED = ${SEED}
-MISSING = ${JSON.stringify(MISSING_LABEL)}
-
-# Feature columns that are kept, with their treatment ("index" is the column position in the CSV).
-#   numeric : used as a number (blank cells are filled with the column mean)
-#   label   : text -> 0, 1, 2, ... (sorted alphabetically), then standardized
-#   onehot  : text -> one 0/1 input per distinct value
-COLUMNS = ${literalList(r.columns)}
-
-# Columns dropped on the training page (not used by the model)
-DROPPED = ${JSON.stringify(r.dropped)}
-
-df = pd.read_csv(CSV_PATH, sep=DELIMITER, dtype=str, encoding="utf-8-sig", keep_default_na=False)
-df = df[df.apply(lambda row: any(v.strip() for v in row), axis=1)].reset_index(drop=True)
-target_name = df.columns[-1]
-
-
-def natural_key(text):
-    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", text)]
-
-
-def to_number(series):
-    text = series.astype(str).str.strip()
-    is_decimal_comma = text.str.fullmatch(r"-?\d+,\d+")
-    text = text.mask(is_decimal_comma, text.str.replace(",", ".", regex=False))
-    return pd.to_numeric(text.mask(text == ""), errors="raise")
-
-
-def encode_column(spec):
-    series = df.iloc[:, spec["index"]]
-    name = spec["name"]
-
-    if spec["mode"] == "numeric":
-        values = to_number(series)
-        values = values.fillna(values.mean()).to_numpy(dtype="float64").reshape(-1, 1)
-        return values, None, [name]
-
-    text = series.astype(str).str.strip().replace("", MISSING)
-    categories = sorted(text.unique().tolist(), key=natural_key)
-    codes = text.map({c: i for i, c in enumerate(categories)}).to_numpy()
-
-    if spec["mode"] == "label":
-        return codes.astype("float64").reshape(-1, 1), categories, [name]
-
-    return np.eye(len(categories))[codes], categories, [f"{name}={c}" for c in categories]
-
-
-# Features: convert text to numbers, then standardize
-blocks, input_names, preprocessing, scale = [], [], [], []
-for spec in COLUMNS:
-    block, categories, names = encode_column(spec)
-    blocks.append(block)
-    input_names.extend(names)
-    scale.extend([spec["mode"] != "onehot"] * block.shape[1])
-    preprocessing.append({**spec, "categories": categories})
-
-if not blocks:
-    raise ValueError("At least one feature column must be kept")
-
-X = np.hstack(blocks).astype("float64")
-
-if X.shape[1] != INPUT_SHAPE:
-    raise ValueError(f"INPUT_SHAPE ({INPUT_SHAPE}) must match the number of model inputs after encoding ({X.shape[1]})")
-
-# Standardization (mean 0, standard deviation 1); one-hot columns stay 0/1
-scale = np.array(scale)
-mean = np.where(scale, X.mean(axis=0), 0.0)
-std = np.where(scale, X.std(axis=0), 1.0)
-std[std == 0] = 1.0
-X = ((X - mean) / std).astype("float32")
-
-# Target
-${pythonTarget(info, config.loss)}
-
-# Shuffle, then split into train / validation / test.
-# The test set is never used for training or for choosing the number of epochs.
-order = np.random.default_rng(SEED).permutation(len(X))
-X, y = X[order], y[order]
-
-n_test = max(1, int(len(X) * TEST_SPLIT + 0.5)) if TEST_SPLIT > 0 else 0
-n_val = max(1, int(len(X) * VALIDATION_SPLIT + 0.5)) if VALIDATION_SPLIT > 0 else 0
-n_train = len(X) - n_val - n_test
-
-X_train, y_train = X[:n_train], y[:n_train]
-X_val, y_val = X[n_train:n_train + n_val], y[n_train:n_train + n_val]
-X_test, y_test = X[n_train + n_val:], y[n_train + n_val:]
-
-tf.keras.utils.set_random_seed(SEED)
-
-model = keras.Sequential([
-    layers.Input(shape=(INPUT_SHAPE,)),
-${dense}
-    layers.Dense(OUTPUT_UNITS, activation="${r.activation}"),
-])
-
-model.compile(
-    optimizer=${optimizer},
-    loss="${info.keras}",
-    metrics=${metrics},
-)
-
-history = model.fit(
-    X_train, y_train,
-    epochs=EPOCHS,
-    batch_size=BATCH_SIZE,
-    validation_data=(X_val, y_val) if n_val else None,
-    shuffle=True,
-    verbose=2,
-)
-
-if not np.isfinite(history.history["loss"][-1]):
-    raise RuntimeError("Loss became NaN or infinite. Lower the learning rate or check for extreme values in the dataset.")
-
-
-${pythonEvaluate(info)}
-
-
-# Evaluation on every part of the data. Judge the model by the test numbers.
-for name, (X_part, y_part) in {
-    "train": (X_train, y_train),
-    "validation": (X_val, y_val),
-    "test": (X_test, y_test),
-}.items():
-    if len(X_part) > 0:
-        evaluate(name, X_part, y_part)
-
-model.save("model.keras")
-
-# Everything needed to preprocess new data the same way before calling model.predict()
-with open("preprocessing.json", "w", encoding="utf-8") as f:
-    json.dump({
-        "feature_names": input_names,
-        "columns": preprocessing,
-        "dropped_columns": DROPPED,
-        "target_name": target_name,
-        "mean": mean.tolist(),
-        "std": std.tolist(),
-        "classes": classes,
-    }, f, indent=2, ensure_ascii=False)
-
-print("Prediction example (first row):", model.predict(X[:1], verbose=0))
-`;
 }
 
 export function nodeEvaluate(info) {
@@ -487,393 +661,6 @@ ${labels}
     matrix.forEach((row, i) => console.log(classes[i].slice(0, 12).padEnd(14) + row.join("\t")));
 }`
     );
-}
-
-function nodeTarget(info, loss) {
-    if (info.kind === "regression") {
-        return String.raw`function encodeTargets(rawTargets) {
-    const values = rawTargets.map(toNumber);
-    const bad = values.findIndex((v) => !Number.isFinite(v));
-
-    if (bad !== -1) {
-        throw new Error('The target column must contain numeric values, but found "' + rawTargets[bad] + '".');
-    }
-
-    return {
-        ys: tf.tensor2d(values, [values.length, 1]),
-        outputUnits: 1,
-        classes: null
-    };
-}`;
-    }
-
-    const head = String.raw`function encodeTargets(rawTargets) {
-    const classes = [...new Set(rawTargets)].sort(naturalCompare);
-
-    const index = new Map(classes.map((label, i) => [label, i]));
-    const labels = rawTargets.map((t) => index.get(t));
-`;
-
-    if (info.kind === "binary") {
-        const values = info.hinge ? "labels.map((l) => l * 2 - 1)" : "labels";
-
-        return (
-            head +
-            String.raw`    if (classes.length !== 2) {
-        throw new Error("Loss ${loss} requires exactly 2 classes, but " + classes.length + " were found.");
-    }
-
-    return {
-        ys: tf.tensor2d(${values}, [labels.length, 1]),
-        outputUnits: 1,
-        classes
-    };
-}`
-        );
-    }
-
-    const ys =
-        info.encoding === "sparse"
-            ? "tf.tensor2d(labels, [labels.length, 1])"
-            : 'tf.tidy(() => tf.oneHot(tf.tensor1d(labels, "int32"), classes.length).toFloat())';
-
-    return (
-        head +
-        String.raw`    if (classes.length < 2) {
-        throw new Error("The target column must contain at least 2 classes.");
-    }
-
-    return {
-        ys: ${ys},
-        outputUnits: classes.length,
-        classes
-    };
-}`
-    );
-}
-
-export function generateNodeCode({ config, dataset, meta }) {
-    const r = resolve(config, dataset, meta);
-    const { info } = r;
-
-    const hidden = HIDDEN_UNITS.map(
-        (u, i) =>
-            `  model.add(tf.layers.dense({ units: ${u}, activation: "relu"${i === 0 ? ", inputShape: [INPUT_SHAPE]" : ""} }));`
-    ).join("\n");
-
-    const optimizer = JS_OPTIMIZERS[config.optimizer]("LEARNING_RATE");
-    const metrics = info.accuracy ? '["accuracy"]' : info.kind === "regression" ? '["mae"]' : "[]";
-
-    return String.raw`// Training code automatically generated from the training page configuration
-// Installation: npm install @tensorflow/tfjs-node
-
-const fs = require("fs");
-const tf = require("@tensorflow/tfjs-node");
-
-const CSV_PATH = ${JSON.stringify(r.fileName)};
-const DELIMITER = ${JSON.stringify(r.delimiter)};
-const INPUT_SHAPE = ${config.inputShape};
-const EPOCHS = ${config.epochs};
-const BATCH_SIZE = ${config.batchSize};
-const LEARNING_RATE = ${config.learningRate};
-const VALIDATION_SPLIT = ${r.validationSplit};
-const TEST_SPLIT = ${r.testSplit};
-const OUTPUT_DIR = "./model-output";
-const MISSING = ${JSON.stringify(MISSING_LABEL)};
-
-// Feature columns that are kept, with their treatment ("index" is the column position in the CSV).
-//   numeric : used as a number (blank cells are filled with the column mean)
-//   label   : text -> 0, 1, 2, ... (sorted alphabetically), then standardized
-//   onehot  : text -> one 0/1 input per distinct value
-const COLUMNS = ${literalList(r.columns)};
-
-// Columns dropped on the training page (not used by the model)
-const DROPPED = ${JSON.stringify(r.dropped)};
-
-function parseCsv(text, delimiter) {
-    const rows = [];
-    let row = [];
-    let field = "";
-    let inQuotes = false;
-
-    for (let i = 0; i < text.length; i++) {
-        const ch = text[i];
-
-        if (inQuotes) {
-            if (ch === '"') {
-                if (text[i + 1] === '"') {
-                    field += '"';
-                    i++;
-                } else {
-                    inQuotes = false;
-                }
-            } else {
-                field += ch;
-            }
-        } else if (ch === '"') {
-            inQuotes = true;
-        } else if (ch === delimiter) {
-            row.push(field);
-            field = "";
-        } else if (ch === "\n" || ch === "\r") {
-            if (ch === "\r" && text[i + 1] === "\n") i++;
-
-            row.push(field);
-            field = "";
-            rows.push(row);
-            row = [];
-        } else {
-            field += ch;
-        }
-    }
-
-    if (field !== "" || row.length > 0) {
-        row.push(field);
-        rows.push(row);
-    }
-
-    return rows.filter((r) => r.some((cell) => cell.trim() !== ""));
-}
-
-function toNumber(cell) {
-    const text = String(cell).trim();
-
-    if (text === "") return NaN;
-    if (/^-?\d+,\d+$/.test(text)) return Number(text.replace(",", "."));
-
-    return Number(text);
-}
-
-function naturalCompare(a, b) {
-    return a.localeCompare(b, undefined, { numeric: true });
-}
-
-function cleanCategory(cell) {
-    const text = String(cell).trim();
-    return text === "" ? MISSING : text;
-}
-
-function shuffledIndices(length) {
-    const order = Array.from({ length }, (_, i) => i);
-
-    for (let i = length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [order[i], order[j]] = [order[j], order[i]];
-    }
-
-    return order;
-}
-
-// Converts text columns to numbers (label / one-hot) and drops the columns not listed in COLUMNS.
-function buildFeatures(rows) {
-    const columns = COLUMNS.map((spec) => ({
-        ...spec,
-        categories:
-            spec.mode === "numeric"
-                ? null
-                : [...new Set(rows.map((r) => cleanCategory(r[spec.index])))].sort(naturalCompare),
-    }));
-
-    const lookups = columns.map((col) => col.categories && new Map(col.categories.map((c, i) => [c, i])));
-
-    const fills = columns.map((col) => {
-        if (col.mode !== "numeric") return 0;
-
-        const values = rows.map((r) => toNumber(r[col.index])).filter(Number.isFinite);
-        return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-    });
-
-    const inputNames = [];
-    const scale = [];
-
-    for (const col of columns) {
-        if (col.mode === "onehot") {
-            for (const c of col.categories) {
-                inputNames.push(col.name + "=" + c);
-                scale.push(false);
-            }
-        } else {
-            inputNames.push(col.name);
-            scale.push(true);
-        }
-    }
-
-    const matrix = rows.map((row, r) => {
-        const out = [];
-
-        columns.forEach((col, k) => {
-            const cell = row[col.index];
-
-            if (col.mode === "numeric") {
-                const value = String(cell).trim() === "" ? fills[k] : toNumber(cell);
-
-                if (!Number.isFinite(value)) {
-                    throw new Error(
-                        'Data row ' + (r + 1) + ', column "' + col.name + '" is not numeric: "' + cell + '".'
-                    );
-                }
-
-                out.push(value);
-                return;
-            }
-
-            const code = lookups[k].get(cleanCategory(cell));
-
-            if (col.mode === "label") {
-                out.push(code);
-            } else {
-                col.categories.forEach((_, j) => out.push(j === code ? 1 : 0));
-            }
-        });
-
-        return out;
-    });
-
-    return { matrix, columns, inputNames, scale };
-}
-
-// Standardization (mean 0, standard deviation 1); one-hot columns stay 0/1
-function standardize(matrix, scale) {
-    const mean = new Array(scale.length).fill(0);
-    const std = new Array(scale.length).fill(1);
-
-    scale.forEach((on, c) => {
-        if (!on) return;
-
-        let sum = 0;
-        for (const row of matrix) sum += row[c];
-        const m = sum / matrix.length;
-
-        let variance = 0;
-        for (const row of matrix) variance += (row[c] - m) ** 2;
-
-        mean[c] = m;
-        std[c] = Math.sqrt(variance / matrix.length) || 1;
-    });
-
-    const scaled = matrix.map((row) => row.map((v, c) => (v - mean[c]) / std[c]));
-
-    return { scaled, mean, std };
-}
-
-${nodeTarget(info, config.loss)}
-
-${nodeEvaluate(info)}
-
-async function main() {
-    const text = fs.readFileSync(CSV_PATH, "utf8").replace(/^\uFEFF/, "");
-    const [headers, ...rows] = parseCsv(text, DELIMITER);
-
-    const targetIndex = headers.length - 1;
-    const targetName = headers[targetIndex].trim();
-
-    const { matrix, columns, inputNames, scale } = buildFeatures(rows);
-
-    if (inputNames.length !== INPUT_SHAPE) {
-        throw new Error(
-            "INPUT_SHAPE (" + INPUT_SHAPE + ") must match the number of model inputs after encoding (" + inputNames.length + ")."
-        );
-    }
-
-    const order = shuffledIndices(rows.length);
-    const { scaled, mean, std } = standardize(order.map((i) => matrix[i]), scale);
-    const rawTargets = order.map((i) => String(rows[i][targetIndex]).trim());
-
-    const xs = tf.tensor2d(scaled, [rows.length, INPUT_SHAPE]);
-    const { ys, outputUnits, classes } = encodeTargets(rawTargets);
-
-    // Data is already shuffled: split into train / validation / test.
-    // The test set is never used for training or for choosing the number of epochs.
-    const total = rows.length;
-    const testCount = TEST_SPLIT > 0 ? Math.max(1, Math.round(total * TEST_SPLIT)) : 0;
-    const valCount = VALIDATION_SPLIT > 0 ? Math.max(1, Math.round(total * VALIDATION_SPLIT)) : 0;
-    const trainCount = total - valCount - testCount;
-
-    const part = (tensor, start, count) =>
-        count > 0 ? tensor.slice([start, 0], [count, -1]) : null;
-
-    const parts = {
-        train: [part(xs, 0, trainCount), part(ys, 0, trainCount)],
-        validation: [part(xs, trainCount, valCount), part(ys, trainCount, valCount)],
-        test: [part(xs, trainCount + valCount, testCount), part(ys, trainCount + valCount, testCount)],
-    };
-
-    const model = tf.sequential();
-
-${hidden}
-    model.add(tf.layers.dense({
-        units: outputUnits,
-        activation: "${r.activation}"
-    }));
-
-    model.compile({
-        optimizer: ${optimizer},
-        loss: "${config.loss}",
-        metrics: ${metrics},
-    });
-
-    const history = [];
-
-    await model.fit(parts.train[0], parts.train[1], {
-        epochs: EPOCHS,
-        batchSize: BATCH_SIZE,
-        validationData: parts.validation[0] ? parts.validation : undefined,
-        shuffle: true,
-        verbose: 0,
-        callbacks: {
-            onEpochEnd: (epoch, logs) => {
-                history.push(logs);
-
-                const val = Number.isFinite(logs.val_loss)
-                    ? " val_loss=" + logs.val_loss.toFixed(4)
-                    : "";
-
-                console.log(
-                    "Epoch " + (epoch + 1) + "/" + EPOCHS +
-                    " loss=" + logs.loss.toFixed(4) + val
-                );
-            },
-        },
-    });
-
-    if (!Number.isFinite(history[history.length - 1].loss)) {
-        throw new Error("Loss became NaN or infinite. Lower the learning rate or check for extreme values in the dataset.");
-    }
-
-    // Evaluation on every part of the data. Judge the model by the test numbers.
-    for (const [name, [xPart, yPart]] of Object.entries(parts)) {
-        if (xPart) evaluate(model, classes, name, xPart, yPart);
-    }
-
-    await model.save("file://" + OUTPUT_DIR);
-
-    // Everything needed to preprocess new data the same way before calling model.predict()
-    fs.writeFileSync(
-        OUTPUT_DIR + "/preprocessing.json",
-        JSON.stringify(
-            { featureNames: inputNames, columns, dropped: DROPPED, targetName, mean, std, classes },
-            null,
-            2
-        )
-    );
-
-    for (const [xPart, yPart] of Object.values(parts)) {
-        if (xPart) {
-            xPart.dispose();
-            yPart.dispose();
-        }
-    }
-    xs.dispose();
-    ys.dispose();
-
-    console.log("Model saved to " + OUTPUT_DIR);
-}
-
-main().catch((err) => {
-    console.error(err.message);
-    process.exit(1);
-});
-`;
 }
 
 export function downloadCode(filename, code) {
