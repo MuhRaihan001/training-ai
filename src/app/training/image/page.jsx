@@ -155,14 +155,17 @@ export default function ImageTrainingPage() {
         );
     }, [folder]);
 
-    // Run pratinjau untuk panel source code di view config.
-    // Belum ada hasil training, jadi cukup config dan dataset.
     const previewRun = useMemo(() => {
         if (!folder || folder.images.length === 0) return null;
+
+        const classes = [...new Set(folder.images.map((item) => item.label))].sort((a, b) =>
+            a.localeCompare(b, undefined, { numeric: true })
+        );
 
         return {
             config,
             dataset: { fileName: folder.name, rows: folder.images.length },
+            meta: { classes, imageSize: IMAGE_SIZE },
         };
     }, [config, folder]);
 
