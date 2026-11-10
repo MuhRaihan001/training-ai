@@ -43,9 +43,17 @@ function releaseModelRef(ref) {
 
 async function openModel(files) {
     const tf = await import("@tensorflow/tfjs");
-    const model = await tf.loadLayersModel(
-        files ? tf.io.browserFiles(files) : "indexeddb://image-classifier"
-    );
+    let model;
+
+    if (!files) {
+        model = await tf.loadLayersModel("indexeddb://image-classifier");
+    } else if (files.length === 1) {
+        const { loadImageBundle } = await import("@/utils/imageBundle");
+        model = await loadImageBundle(await files[0].text());
+    } else {
+        model = await tf.loadLayersModel(tf.io.browserFiles(files));
+    }
+
     const meta = model.getUserDefinedMetadata();
 
     if (meta?.task !== "image" || !Array.isArray(meta.classes) || meta.imageSize !== IMAGE_SIZE) {
@@ -187,14 +195,14 @@ export default function TestImageModelPage() {
         const weights = files.find((file) => file.name.endsWith(".bin"));
 
         setError("");
-        if (!json || !weights) {
-            setError("Select both files from Download model: the .json file and the .weights.bin file.");
+        if (!json) {
+            setError("Select the model .json file.");
             return;
         }
 
         setLoading(true);
         try {
-            const { model, meta: loaded } = await openModel([json, weights]);
+            const { model, meta: loaded } = await openModel(weights ? [json, weights] : [json]);
 
             releaseModelRef(modelRef);
             modelRef.current = model;
