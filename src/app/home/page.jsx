@@ -6,7 +6,8 @@ import Link from "next/link";
 const APP_NAME = "Neural Network Playground";
 
 const NAV_LINKS = [
-    { href: "#about", label: "About Us"  },
+    { href: "#modes", label: "Features" },
+    { href: "#about", label: "About Us" },
     { href: "/training", label: "Training" },
     { href: "/training/image", label: "Image Training" },
     { href: "/test", label: "Run Model" },
@@ -304,8 +305,180 @@ function Navbar() {
     );
 }
 
+const textLinkClass =
+    "inline-flex h-11 items-center rounded-md font-medium text-stone-900 underline " +
+    "decoration-stone-400 underline-offset-4 transition-colors hover:decoration-orange-700 " +
+    "motion-reduce:transition-none " +
+    focusClass;
+
+const MODES = [
+    {
+        id: "csv",
+        title: "Tables (CSV)",
+        href: "/training",
+        cta: "Train on CSV",
+        intro:
+            "Upload a spreadsheet exported as CSV. The first row holds the column names and the last column is what the model learns to predict. A number gives you regression and a category gives you classification. The playground detects which one it is and suggests the matching loss function.",
+        details: [
+            [
+                "Columns",
+                "Text columns are converted to numbers with one-hot or label encoding. Drop IDs and any other column you do not want the model to use.",
+            ],
+            [
+                "Network",
+                "Up to 6 hidden layers with 1 to 64 neurons each, using ReLU, Tanh, or Sigmoid.",
+            ],
+            [
+                "Settings",
+                "12 loss functions, 6 optimizers, learning rate, epochs, batch size, a seed for repeatable runs, early stopping, and three presets to start from.",
+            ],
+            [
+                "Sample data",
+                "House prices, student graduation, and three groups, for when you have no dataset yet.",
+            ],
+        ],
+    },
+    {
+        id: "image",
+        title: "Images",
+        href: "/training/image",
+        cta: "Train on Images",
+        intro:
+            "Pick a folder with one subfolder per class, for example pets/cats and pets/dogs. Every image is resized to 64 by 64 pixels, and a small convolutional network learns to tell the classes apart.",
+        details: [
+            [
+                "Folder",
+                "JPG, PNG, WebP, BMP, and GIF files, from at least 2 classes and up to 2,000 images in total.",
+            ],
+            [
+                "Network",
+                "Three convolution and pooling blocks, a dense layer of 64 neurons, and a softmax output with one neuron per class. The shape is fixed, so you only tune the training settings.",
+            ],
+            [
+                "Settings",
+                "Optimizer, learning rate, epochs, batch size, and early stopping.",
+            ],
+            [
+                "Data check",
+                "The class balance is checked before training, so a lopsided folder is flagged early instead of showing up later as odd accuracy.",
+            ],
+        ],
+    },
+];
+
+const AFTER_TRAINING = [
+    [
+        "Evaluate",
+        "Rows or images are shuffled and split into training, validation, and test sets (70/15/15 when there are at least 30). You get loss and accuracy charts for every epoch, a confusion matrix with precision, recall, and F1 per class, and written insights about overfitting. Tables also get regression plots and a ranking of which columns matter most.",
+    ],
+    [
+        "Compare",
+        "Every table run is saved in your browser, up to the last 10. Change one setting at a time and plot the loss curves of up to 6 runs together.",
+    ],
+    [
+        "Export",
+        "Download the trained model as a JSON file, and the equivalent training script in Python or Node.js. Table runs also produce a standalone HTML report you can print.",
+    ],
+    [
+        "Test",
+        "Load the model on the test page. For tables, move the sliders and watch the prediction update, or upload a CSV to predict many rows and download the results. For images, add photos and see the five most likely classes for each. In both cases a step-by-step view animates how every layer reaches the decision.",
+    ],
+];
+
+function DetailSection({ id, title, children }) {
+    const headingId = `home-${id}`;
+
+    return (
+        <section
+            id={id}
+            aria-labelledby={headingId}
+            className="border-t border-stone-200 py-14 sm:py-20"
+        >
+            <div className="grid gap-6 lg:grid-cols-12 lg:gap-10">
+                <h2
+                    id={headingId}
+                    className="text-lg font-semibold tracking-tight text-stone-900 lg:col-span-3"
+                >
+                    {title}
+                </h2>
+                <div className="min-w-0 lg:col-span-9">{children}</div>
+            </div>
+        </section>
+    );
+}
+
+function ModesSection() {
+    return (
+        <DetailSection id="modes" title="What you can train">
+            <p className="max-w-2xl text-xl font-semibold leading-snug tracking-tight text-stone-900 sm:text-2xl">
+                Two kinds of data, one workflow. Choose the one that matches what you want the model to predict.
+            </p>
+
+            <div className="mt-10 grid gap-12 md:grid-cols-2 md:gap-10">
+                {MODES.map((mode) => (
+                    <article
+                        key={mode.id}
+                        aria-labelledby={`mode-${mode.id}`}
+                        className="min-w-0"
+                    >
+                        <h3
+                            id={`mode-${mode.id}`}
+                            className="text-lg font-semibold tracking-tight text-stone-900"
+                        >
+                            {mode.title}
+                        </h3>
+                        <p className="mt-3 text-base leading-relaxed text-stone-700">{mode.intro}</p>
+
+                        <dl className="mt-6 divide-y divide-stone-200 border-y border-stone-200">
+                            {mode.details.map(([term, text]) => (
+                                <div key={term} className="py-3">
+                                    <dt className="text-sm font-medium text-stone-900">{term}</dt>
+                                    <dd className="mt-1 text-sm leading-relaxed text-stone-700">{text}</dd>
+                                </div>
+                            ))}
+                        </dl>
+
+                        <div className="mt-4">
+                            <Link href={mode.href} className={textLinkClass}>
+                                {mode.cta}
+                            </Link>
+                        </div>
+                    </article>
+                ))}
+            </div>
+        </DetailSection>
+    );
+}
+
+function AfterTrainingSection() {
+    return (
+        <DetailSection id="after-training" title="After training">
+            <p className="max-w-2xl text-xl font-semibold leading-snug tracking-tight text-stone-900 sm:text-2xl">
+                Training is only the first half. The rest is understanding what the model learned.
+            </p>
+
+            <dl className="mt-10 max-w-3xl divide-y divide-stone-200 border-y border-stone-200">
+                {AFTER_TRAINING.map(([term, text]) => (
+                    <div
+                        key={term}
+                        className="py-5 md:grid md:grid-cols-[8rem_minmax(0,1fr)] md:gap-x-8"
+                    >
+                        <dt className="text-sm font-semibold text-stone-900">{term}</dt>
+                        <dd className="mt-1 text-base leading-relaxed text-stone-700 md:mt-0">{text}</dd>
+                    </div>
+                ))}
+            </dl>
+
+            <p className="mt-6 max-w-2xl text-sm text-stone-600">
+                Training, evaluation, and testing all run in your browser with TensorFlow.js.
+            </p>
+        </DetailSection>
+    );
+}
+
 export default function HomePage() {
     return (
+        <>
         <div className="relative flex min-h-screen flex-col overflow-hidden bg-stone-50 text-stone-900 antialiased">
             <RibbonBackground />
             <Navbar />
@@ -322,7 +495,13 @@ export default function HomePage() {
                             </span>
                         </h1>
 
-                        <div className="mt-10 flex flex-col gap-3 sm:flex-row">
+                        <p className="mt-6 max-w-lg text-base leading-relaxed text-stone-700">
+                            Train on your own CSV data for regression and classification, or train an image
+                            classifier from a folder of pictures, where each subfolder is one class. Everything
+                            runs in your browser.
+                        </p>
+
+                        <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                             <Link
                                 href="/training"
                                 className={
@@ -332,7 +511,19 @@ export default function HomePage() {
                                     focusClass
                                 }
                             >
-                                Start Training
+                                Train on CSV
+                            </Link>
+
+                            <Link
+                                href="/training/image"
+                                className={
+                                    "inline-flex h-11 items-center justify-center rounded-md bg-stone-900 px-6 " +
+                                    "text-sm font-medium text-white transition-colors hover:bg-stone-800 " +
+                                    "active:bg-stone-950 motion-reduce:transition-none " +
+                                    focusClass
+                                }
+                            >
+                                Train on Images
                             </Link>
 
                             <Link
@@ -351,5 +542,13 @@ export default function HomePage() {
                 </div>
             </main>
         </div>
+
+        <div className="bg-stone-50 text-stone-900 antialiased">
+            <div className="mx-auto w-full max-w-6xl px-5 sm:px-8">
+                <ModesSection />
+                <AfterTrainingSection />
+            </div>
+        </div>
+        </>
     );
 }

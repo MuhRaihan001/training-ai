@@ -16,6 +16,8 @@ import ModelConfigurationForm from "@/app/training/config/ModelConfigurationForm
 import TrainingProgress from "@/app/training/progress/TrainingProgress";
 import TrainingResults from "@/app/training/results/TrainingResults";
 import RunComparison from "@/app/training/experiments/RunComparison";
+import SourceCodePanel from "@/app/training/results/SourceCodePanel";
+import { IMAGE_GENERATORS } from "@/utils/export/convertImage";
 import { DEFAULT_CONFIG, LOSS_LABELS, btnPrimary, btnSecondary, btnText } from "@/app/training/shared/ui";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -132,6 +134,30 @@ export default function TrainingPage() {
         [dataset, task, plan]
     );
 
+    // di dalam TrainingPage, setelah quality useMemo
+    const previewRun = useMemo(() => {
+        if (!dataset || !planReady) return null;
+
+        const columns = [];
+        const dropped = [];
+        dataset.columnInfo.forEach((info, i) => {
+            const mode = plan[i];
+            if (mode === "drop") dropped.push(info.name);
+            else columns.push({ index: info.index, name: info.name, mode });
+        });
+
+        return {
+            config: { ...config, layers: normalizeLayers(config.layers) },
+            dataset: {
+                fileName: dataset.fileName,
+                rows: dataset.rows,
+                headers: dataset.headers,
+                delimiter: dataset.delimiter,
+            },
+            meta: { columns, dropped },
+        };
+    }, [config, dataset, plan, planReady]);
+
     useEffect(() => {
         runsRef.current = runs;
     }, [runs]);
@@ -153,7 +179,7 @@ export default function TrainingPage() {
                 if (session) setSavedSession(session);
                 if (Array.isArray(savedRuns)) setRuns(savedRuns);
             } catch {
-                
+
             } finally {
                 if (!cancelled) setRunsLoaded(true);
             }
@@ -167,7 +193,7 @@ export default function TrainingPage() {
 
     useEffect(() => {
         if (!runsLoaded) return;
-        storageSet("runs", runs).catch(() => {});
+        storageSet("runs", runs).catch(() => { });
     }, [runs, runsLoaded]);
 
     useEffect(() => {
@@ -179,7 +205,7 @@ export default function TrainingPage() {
                 config,
                 plan,
                 savedAt: Date.now(),
-            }).catch(() => {});
+            }).catch(() => { });
         }, 600);
         return () => clearTimeout(timer);
     }, [dataset, config, plan]);
@@ -290,7 +316,7 @@ export default function TrainingPage() {
         setBundle(null);
         setActiveId(null);
         setView("config");
-        storageDelete("session").catch(() => {});
+        storageDelete("session").catch(() => { });
     }
 
     function handleReset() {
@@ -312,7 +338,7 @@ export default function TrainingPage() {
 
     function handleDiscardSession() {
         setSavedSession(null);
-        storageDelete("session").catch(() => {});
+        storageDelete("session").catch(() => { });
     }
 
     async function startTraining(cfg = config, columns = plan) {
@@ -378,8 +404,8 @@ export default function TrainingPage() {
 
             const next = [newRun, ...current];
             const kept = next.slice(0, MAX_RUNS);
-            next.slice(MAX_RUNS).forEach((old) => storageDelete(`bundle:${old.id}`).catch(() => {}));
-            storageSet(`bundle:${id}`, newBundle).catch(() => {});
+            next.slice(MAX_RUNS).forEach((old) => storageDelete(`bundle:${old.id}`).catch(() => { }));
+            storageSet(`bundle:${id}`, newBundle).catch(() => { });
 
             setRuns(kept);
             setActiveId(id);
@@ -441,7 +467,7 @@ export default function TrainingPage() {
 
     function handleDeleteRun(id) {
         setRuns((prev) => prev.filter((item) => item.id !== id));
-        storageDelete(`bundle:${id}`).catch(() => {});
+        storageDelete(`bundle:${id}`).catch(() => { });
         if (id === activeId) {
             setActiveId(null);
             setBundle(null);
@@ -449,7 +475,7 @@ export default function TrainingPage() {
     }
 
     function handleClearRuns() {
-        runsRef.current.forEach((item) => storageDelete(`bundle:${item.id}`).catch(() => {}));
+        runsRef.current.forEach((item) => storageDelete(`bundle:${item.id}`).catch(() => { }));
         setRuns([]);
         setActiveId(null);
         setBundle(null);
@@ -557,6 +583,16 @@ export default function TrainingPage() {
                                     task={task}
                                 />
                             </ConfigSection>
+
+                            <div className="mt-4">
+                                {previewRun ? (
+                                    <SourceCodePanel run={previewRun} />
+                                ) : (
+                                    <p className="text-sm text-stone-500">
+                                        Load a dataset to preview the training code.
+                                    </p>
+                                )}
+                            </div>
 
                             <div className="border-t border-stone-200 pt-6">
                                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

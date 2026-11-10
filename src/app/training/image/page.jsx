@@ -41,6 +41,9 @@ const STOP_TEXT = {
     "early-stopping": "Stopped by early stopping",
 };
 
+const SOURCE_DESCRIPTION =
+    "Training code equivalent to the settings above. Put the script next to your image folder (one subfolder per class) before running it.";
+
 const fileClass =
     "block h-11 w-full max-w-md cursor-pointer rounded-md text-sm text-stone-600 " +
     "file:mr-4 file:h-11 file:cursor-pointer file:rounded-md file:border file:border-stone-500 " +
@@ -152,6 +155,17 @@ export default function ImageTrainingPage() {
         );
     }, [folder]);
 
+    // Run pratinjau untuk panel source code di view config.
+    // Belum ada hasil training, jadi cukup config dan dataset.
+    const previewRun = useMemo(() => {
+        if (!folder || folder.images.length === 0) return null;
+
+        return {
+            config,
+            dataset: { fileName: folder.name, rows: folder.images.length },
+        };
+    }, [config, folder]);
+
     const analysis = useMemo(() => (run ? analyzeHistory(run.history, run.config) : null), [run]);
 
     function handleChange(event) {
@@ -255,17 +269,6 @@ export default function ImageTrainingPage() {
         } catch (err) {
             setDownloadError(err.message || "The model could not be handed over to the test page.");
         }
-    }
-
-    function saveBlob(name, blob) {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     async function handleDownload() {
@@ -430,6 +433,20 @@ export default function ImageTrainingPage() {
                                 softmax output with one neuron per class. Images are split 70/15/15 into training, validation,
                                 and test sets when there are at least 30 of them.
                             </p>
+
+                            <div className="mt-8">
+                                {previewRun ? (
+                                    <SourceCodePanel
+                                        run={previewRun}
+                                        generators={IMAGE_GENERATORS}
+                                        description={SOURCE_DESCRIPTION}
+                                    />
+                                ) : (
+                                    <p className="text-sm text-stone-500">
+                                        Select an image folder to preview the training code.
+                                    </p>
+                                )}
+                            </div>
                         </Section>
 
                         <div className="border-t border-stone-200 pt-6">
@@ -580,7 +597,7 @@ export default function ImageTrainingPage() {
                                 <SourceCodePanel
                                     run={run}
                                     generators={IMAGE_GENERATORS}
-                                    description="Training code equivalent to the settings above. Put the script next to your image folder (one subfolder per class) before running it."
+                                    description={SOURCE_DESCRIPTION}
                                 />
                             </div>
                         </details>
