@@ -1,7 +1,7 @@
 import * as tf from "@tensorflow/tfjs";
 import { NextResponse } from "next/server";
-import { parseDataset } from "@/utils/csv";
-import { trainModel } from "@/utils/training";
+import { parseDataset } from "@/utils/data/csv";
+import { trainModel } from "@/utils/model/training";
 
 function toBase64(weightData) {
     const buffer =

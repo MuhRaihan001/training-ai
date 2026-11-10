@@ -3,18 +3,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { IMAGE_SIZE, MAX_IMAGES, imageProblem, parseFolder } from "@/utils/imageDataset";
-import { analyzeQuality } from "@/utils/dataQuality";
-import { analyzeHistory } from "@/utils/insight";
-import { IMAGE_GENERATORS } from "@/utils/convertImage";
-import DataQuality from "../DataQuality";
-import EpochDetails from "../EpochDetails";
-import SourceCodePanel from "../SourceCodePanel";
-import TrainingEvaluation from "../TrainingEvaluation";
-import TrainingHistoryChart from "../TrainingHistoryChart";
-import TrainingInsight from "../TrainingInsight";
-import TrainingMetrics from "../TrainingMetrics";
-import TrainingProgress from "../TrainingProgress";
+import { IMAGE_SIZE, MAX_IMAGES, imageProblem, parseFolder } from "@/utils/image/imageDataset";
+import { analyzeQuality } from "@/utils/data/dataQuality";
+import { analyzeHistory } from "@/utils/model/insight";
+import { IMAGE_GENERATORS } from "@/utils/export/convertImage";
+import DataQuality from "@/app/training/config/DataQuality";
+import EpochDetails from "@/app/training/results/EpochDetails";
+import SourceCodePanel from "@/app/training/results/SourceCodePanel";
+import TrainingEvaluation from "@/app/training/evaluation/TrainingEvaluation";
+import TrainingHistoryChart from "@/app/training/charts/TrainingHistoryChart";
+import TrainingInsight from "@/app/training/results/TrainingInsight";
+import TrainingMetrics from "@/app/training/results/TrainingMetrics";
+import TrainingProgress from "@/app/training/progress/TrainingProgress";
 import {
     LOSS_LABELS,
     OPTIMIZER_LABELS,
@@ -24,7 +24,7 @@ import {
     controlClass,
     focusRing,
     sectionHeading,
-} from "../ui";
+} from "@/app/training/shared/ui";
 
 const DEFAULTS = {
     epochs: 30,
@@ -199,7 +199,7 @@ export default function ImageTrainingPage() {
         try {
             const tf = await import("@tensorflow/tfjs");
             await tf.ready();
-            const { trainImageModel } = await import("@/utils/imageTraining");
+            const { trainImageModel } = await import("@/utils/image/imageTraining");
 
             const result = await trainImageModel(cfg, folder.images, {
                 onLoad: (done, total) => setLoadProgress({ done, total }),
@@ -275,7 +275,7 @@ export default function ImageTrainingPage() {
         }
         try {
             setDownloadError("");
-            const { downloadImageBundle } = await import("@/utils/imageBundle");
+            const { downloadImageBundle } = await import("@/utils/image/imageBundle");
             await downloadImageBundle(modelRef.current);
         } catch (err) {
             setDownloadError(err.message || "The model could not be downloaded.");

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { IMAGE_SIZE } from "@/utils/imageDataset";
+import { IMAGE_SIZE } from "@/utils/image/imageDataset";
 import NetworkVisualizer from "../NetworkVisualizer";
 
 const LIMIT = 200;
@@ -48,7 +48,7 @@ async function openModel(files) {
     if (!files) {
         model = await tf.loadLayersModel("indexeddb://image-classifier");
     } else if (files.length === 1) {
-        const { loadImageBundle } = await import("@/utils/imageBundle");
+        const { loadImageBundle } = await import("@/utils/image/imageBundle");
         model = await loadImageBundle(await files[0].text());
     } else {
         model = await tf.loadLayersModel(tf.io.browserFiles(files));
@@ -240,7 +240,7 @@ export default function TestImageModelPage() {
 
         setBusy(true);
         try {
-            const { predictImages } = await import("@/utils/imageTraining");
+            const { predictImages } = await import("@/utils/image/imageTraining");
             const results = await predictImages(modelRef.current, files);
 
             const next = files.map((file, i) => ({
@@ -267,7 +267,7 @@ export default function TestImageModelPage() {
 
         try {
             setError("");
-            const { traceImage } = await import("@/utils/imageTraining");
+            const { traceImage } = await import("@/utils/image/imageTraining");
             const data = await traceImage(modelRef.current, meta, item.file);
 
             setTracing({ id: Date.now(), name: item.name, url: item.url, data });

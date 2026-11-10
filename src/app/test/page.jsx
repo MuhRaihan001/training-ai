@@ -2,10 +2,10 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { loadBundle, loadBundleObject, predict, predictBatch, traceForward } from "@/utils/modelBundle";
-import { parseDataset } from "@/utils/csv";
-import { buildCsv, downloadText } from "@/utils/csvExport";
-import { storageGet } from "@/utils/storage";
+import { loadBundle, loadBundleObject, predict, predictBatch, traceForward } from "@/utils/model/modelBundle";
+import { parseDataset } from "@/utils/data/csv";
+import { buildCsv, downloadText } from "@/utils/export/csvExport";
+import { storageGet } from "@/utils/storage/storage";
 import NetworkVisualizer from "./NetworkVisualizer";
 
 const inputClass =

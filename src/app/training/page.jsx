@@ -1,22 +1,22 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { parseDataset } from "@/utils/csv";
-import { sampleToFile } from "@/utils/sampleDatasets";
-import { MAX_INPUTS, analyzeColumns, countInputs, defaultPlan } from "@/utils/preprocess";
-import { normalizeLayers, validateLayers } from "@/utils/architecture";
-import { detectTask, lossProblem } from "@/utils/target";
-import { analyzeQuality } from "@/utils/dataQuality";
-import { storageDelete, storageGet, storageSet } from "@/utils/storage";
-import TrainingHeader from "./TrainingHeader";
-import DatasetSection from "./DatasetSection";
-import ColumnsSection from "./ColumnsSection";
-import DataQuality from "./DataQuality";
-import ModelConfigurationForm from "./ModelConfigurationForm";
-import TrainingProgress from "./TrainingProgress";
-import TrainingResults from "./TrainingResults";
-import RunComparison from "./RunComparison";
-import { DEFAULT_CONFIG, LOSS_LABELS, btnPrimary, btnSecondary, btnText } from "./ui";
+import { parseDataset } from "@/utils/data/csv";
+import { sampleToFile } from "@/utils/data/sampleDatasets";
+import { MAX_INPUTS, analyzeColumns, countInputs, defaultPlan } from "@/utils/data/preprocess";
+import { normalizeLayers, validateLayers } from "@/utils/model/architecture";
+import { detectTask, lossProblem } from "@/utils/data/target";
+import { analyzeQuality } from "@/utils/data/dataQuality";
+import { storageDelete, storageGet, storageSet } from "@/utils/storage/storage";
+import TrainingHeader from "@/app/training/shared/TrainingHeader";
+import DatasetSection from "@/app/training/config/DatasetSection";
+import ColumnsSection from "@/app/training/config/ColumnsSection";
+import DataQuality from "@/app/training/config/DataQuality";
+import ModelConfigurationForm from "@/app/training/config/ModelConfigurationForm";
+import TrainingProgress from "@/app/training/progress/TrainingProgress";
+import TrainingResults from "@/app/training/results/TrainingResults";
+import RunComparison from "@/app/training/experiments/RunComparison";
+import { DEFAULT_CONFIG, LOSS_LABELS, btnPrimary, btnSecondary, btnText } from "@/app/training/shared/ui";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_RUNS = 10;
@@ -340,8 +340,8 @@ export default function TrainingPage() {
         try {
             const tf = await import("@tensorflow/tfjs");
             await tf.ready();
-            const { trainModel } = await import("@/utils/training");
-            const { createBundle } = await import("@/utils/modelBundle");
+            const { trainModel } = await import("@/utils/model/training");
+            const { createBundle } = await import("@/utils/model/modelBundle");
 
             result = await trainModel(cfg, dataset, {
                 columns,
