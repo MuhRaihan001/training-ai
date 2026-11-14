@@ -6,10 +6,9 @@ import Link from "next/link";
 const APP_NAME = "Neural Network Playground";
 
 const NAV_LINKS = [
-    { href: "#modes", label: "Features" },
     { href: "#about", label: "About Us" },
     { href: "/training", label: "Training" },
-    { href: "/training/image", label: "Image Training" },
+    { href: "/learn", label: "Learn how Ai works" },
     { href: "/test", label: "Run Model" },
 ];
 
